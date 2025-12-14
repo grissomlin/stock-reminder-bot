@@ -1,4 +1,4 @@
-﻿# bot.py (最終運行穩定版 - 解決 utils 引用錯誤)
+# bot.py (最終運行穩定版 - 整合 Cron 排程與時區)
 
 import os
 import sys
@@ -7,6 +7,7 @@ import logging
 import asyncio
 from datetime import datetime
 import importlib.util 
+from pytz import timezone # 🚨 新增：引入時區模組
 
 # --- 設置日誌記錄 (Logging) ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -27,12 +28,15 @@ CHAT_ID_SHEET = '工作表2'
 CHAT_ID_CELL = 'A2' 
 CHAT_ID_NOTE_CELL = 'A1' 
 
+# 🚨 全域時區變數
+TAIPEI_TZ = timezone('Asia/Taipei') 
+
 # 全域變數
 APPLICATION = None
 USER_CHAT_ID = None
 ANALYZE_FUNC = None 
 
-# 🚨 修正：引入 ta_helpers 模組用於 get_static_link
+# --- 核心模組加載 ---
 try:
     module_name = "ta_analyzer"
     module_path = os.path.join(current_dir, f"{module_name}.py")
@@ -44,7 +48,6 @@ try:
     ANALYZE_FUNC = ta_module.analyze_and_update_sheets
     logger.info("✅ ta_analyzer 模組已通過絕對路徑加載成功。")
     
-    # 引入 ta_helpers 模組
     module_name_helpers = "ta_helpers"
     module_path_helpers = os.path.join(current_dir, f"{module_name_helpers}.py")
     spec_helpers = importlib.util.spec_from_file_location(module_name_helpers, module_path_helpers)
@@ -75,14 +78,15 @@ from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandl
 
 def get_google_sheets_client():
     """連線到 Google Sheets 服務帳戶。"""
+    # ... (此函數內容與原文件保持一致) ...
     if os.environ.get(GOOGLE_CREDENTIALS_ENV):
         logger.info("從環境變數讀取 Google 憑證 (部署模式)...")
         try:
-             credentials_json = json.loads(os.environ.get(GOOGLE_CREDENTIALS_ENV))
-             return gspread.service_account_from_dict(credentials_json)
+            credentials_json = json.loads(os.environ.get(GOOGLE_CREDENTIALS_ENV))
+            return gspread.service_account_from_dict(credentials_json)
         except json.JSONDecodeError:
-             logger.error("GOOGLE_CREDENTIALS 環境變數格式錯誤。")
-             return None
+            logger.error("GOOGLE_CREDENTIALS 環境變數格式錯誤。")
+            return None
     
     elif os.path.exists(LOCAL_SERVICE_ACCOUNT_FILE):
         logger.info("從本地金鑰檔案讀取 Google 憑證 (本地模式)...")
@@ -93,6 +97,7 @@ def get_google_sheets_client():
         return None
 
 def save_chat_id_to_sheets(chat_id: int):
+    # ... (此函數內容與原文件保持一致) ...
     try:
         gc = get_google_sheets_client()
         if not gc:
@@ -116,6 +121,7 @@ def save_chat_id_to_sheets(chat_id: int):
         return False
 
 def get_chat_id_from_sheets():
+    # ... (此函數內容與原文件保持一致) ...
     try:
         gc = get_google_sheets_client()
         if not gc:
@@ -136,7 +142,7 @@ def get_chat_id_from_sheets():
         return None
 
 def fetch_stock_data_for_reminder(): 
-    """從工作表1讀取代號，並使用靜態連結表生成連結欄位。"""
+    # ... (此函數內容與原文件保持一致) ...
     try:
         gc = get_google_sheets_client()
         if not gc:
@@ -161,9 +167,8 @@ def fetch_stock_data_for_reminder():
             logger.error(f"工作表1中找不到欄位 '{provider_column_name}'，連結功能將受限。")
             df[provider_column_name] = ''
         
-        # 2. 🚨 關鍵修復：使用 ta_helpers.get_static_link
+        # 2. 使用 ta_helpers.get_static_link
         df['連結'] = df.apply(
-            # 這裡就是把 utils 換成 ta_helpers 的地方
             lambda row: ta_helpers.get_static_link(row['代號'], row[provider_column_name]),
             axis=1
         )
@@ -178,6 +183,7 @@ def fetch_stock_data_for_reminder():
 # --- Telegram Bot 函數 ---
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # ... (此函數內容與原文件保持一致) ...
     global USER_CHAT_ID
     new_chat_id = update.message.chat_id 
     
@@ -249,15 +255,55 @@ async def periodic_reminder_job(context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"成功向 {USER_CHAT_ID} 發送 {len(alerts)} 個技術指標獨立警報。")
         
     else:
-        try:
-            await context.bot.send_message(
-                chat_id=USER_CHAT_ID, 
-                text=f"✅ 每日檢查完成 ({datetime.now().strftime('%H:%M:%S')})：\n所有 {len(stock_codes)} 支股票指標正常。",
-                disable_notification=True
-            )
-        except Exception:
-            pass
+        # 🚨 移除成功通知：如果沒有警報，就不發送任何訊息
         logger.info("沒有股票符合警報條件。")
+
+
+def setup_scheduling(job_queue):
+    """
+    🚨 新增：設定多個市場的 Cron 排程，以台灣時間 (Asia/Taipei) 為準。
+    """
+    # 設定 APScheduler 預設時區為台灣時間
+    job_defaults = job_queue.job_defaults
+    job_defaults.tzinfo = TAIPEI_TZ 
+
+    # ----------------------------------------------------
+    # 🎯 Cron 排程設定 (以台灣時間 Asia/Taipei 為準)
+    # ----------------------------------------------------
+
+    # 1. 亞洲盤交易時間 (週一到週五，08:30 到 13:30，每 30 分鐘)
+    job_queue.add_job(periodic_reminder_job, 
+                      'cron', 
+                      minute='30,0', 
+                      hour='8-13', 
+                      day_of_week='mon-fri',
+                      name='Asia Market Scan (08:30-13:30)')
+
+    # 2. 歐洲盤開盤前/中段 (週一到週五，17:00)
+    job_queue.add_job(periodic_reminder_job, 
+                      'cron', 
+                      minute='0', 
+                      hour='17', 
+                      day_of_week='mon-fri',
+                      name='Europe Open Scan (17:00)')
+
+    # 3. 晚盤掃描 (週一到週五，23:00)
+    job_queue.add_job(periodic_reminder_job, 
+                      'cron', 
+                      minute='0', 
+                      hour='23', 
+                      day_of_week='mon-fri',
+                      name='Late Scan (23:00)')
+
+    # 4. 美股收盤數據獲取 (週五收盤後，台灣時間週六凌晨 04:00)
+    job_queue.add_job(periodic_reminder_job, 
+                      'cron', 
+                      minute='0', 
+                      hour='4', 
+                      day_of_week='sat',
+                      name='US Close Scan (Sat 04:00)')
+
+    logger.info("✅ 已設定所有市場的 Cron 排程。")
 
 
 def initialize_bot_and_scheduler(run_web_server=False):
@@ -266,22 +312,27 @@ def initialize_bot_and_scheduler(run_web_server=False):
     if not TELEGRAM_BOT_TOKEN: 
         logger.error(f"無法啟動：{TELEGRAM_BOT_TOKEN_ENV} 環境變數未設定。")
         if not run_web_server:
-             print("\n🚨 本地運行失敗提示：請在終端機中設定 TELEGRAM_BOT_TOKEN 環境變數。\n")
+            print("\n🚨 本地運行失敗提示：請在終端機中設定 TELEGRAM_BOT_TOKEN 環境變數。\n")
         return False
 
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
     APPLICATION = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     
-    job_defaults = {'coalesce': True, 'max_instances': 3, 'misfire_grace_time': 100}
-    scheduler = AsyncIOScheduler(job_defaults=job_defaults) 
+    # 🚨 修正：直接使用 APPLICATION 內建的 job_queue
+    job_queue = APPLICATION.job_queue
     
-    scheduler.add_job(periodic_reminder_job, 'interval', minutes=1, name='Sheet Reminder Job', kwargs={'context': APPLICATION})
+    # 1. 設置排程器選項
+    job_defaults = {'coalesce': True, 'max_instances': 3, 'misfire_grace_time': 100}
+    
+    # 2. 設置 Cron 排程
+    setup_scheduling(job_queue) 
     
     async def start_scheduler_after_bot_init(app: Application):
-        if not scheduler.running:
-            scheduler.start()
-            logger.info("排程器已成功啟動！")
+        # 由於 Application.builder().build() 會自動創建並集成 JobQueue/Scheduler，
+        # 我們只需確保任務已加入。
+        # 在 Application 啟動後，Scheduler 會被自動啟動。
+        logger.info("排程器已準備就緒，等待 Application 啟動。")
             
     APPLICATION.post_init = start_scheduler_after_bot_init
     
@@ -324,7 +375,7 @@ if __name__ == '__main__':
     else:
         # 部署模式 (如 Railway)
         if not initialize_bot_and_scheduler(run_web_server=True):
-             logger.warning("Bot 初始化失敗，Flask 服務將啟動但 Bot 核心未運行。")
+            logger.warning("Bot 初始化失敗，Flask 服務將啟動但 Bot 核心未運行。")
         
         # 啟動 Flask 服務以滿足 Railway 對 Web 服務的要求
         port = int(os.environ.get('PORT', 5000))
