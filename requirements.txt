@@ -5,7 +5,8 @@
 pandas==2.1.4
 # 🚨 必須修正：使用 URL 語法，防止 pip 嘗試編譯原始碼
 # 使用 cp310 輪子，這是因為 Dockerfile 使用了 python:3.10 映像
-TA-Lib @ https://pypi2.ricequant.com/packages/TA_Lib-0.4.28-cp310-cp310-linux_x86_64.whl
+# 🚨 必須修正：移除 URL，恢復為標準寫法，讓 pip 嘗試編譯
+TA-Lib==0.4.28
 yfinance==0.2.66
 
 # ===== Networking / HTTP =====
@@ -63,3 +64,4 @@ colorama==0.4.6
 frozendict==2.4.7
 cffi==2.0.0
 pycparser==2.23
+
