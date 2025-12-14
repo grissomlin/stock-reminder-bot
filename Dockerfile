@@ -1,44 +1,49 @@
-# Dockerfile (最終穩定版 - 採用 Python 3.10 + NumPy 1.22.4 編譯)
-
-# 1. 鎖定使用 Python 3.10
+# ===============================
+# Stable TA-Lib Dockerfile
+# ===============================
 FROM python:3.10-slim
 
-# 設定工作目錄
-WORKDIR /usr/src/app
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
 
-# 2. 安裝系統依賴 (TA-Lib C 庫所需)
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        wget \
-        build-essential \
-        libffi-dev \
-        && ldconfig \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
 
-# 3. 下載、編譯並安裝 TA-Lib C 函式庫 (系統庫)
-WORKDIR /tmp/ta-lib
-RUN wget https://github.com/TA-Lib/ta-lib/releases/download/v0.4.0/ta-lib-0.4.0-src.tar.gz && \
-    tar -xvf ta-lib-0.4.0-src.tar.gz && \
+# ---------- system deps ----------
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    wget \
+    curl \
+    ca-certificates \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------- build TA-Lib C lib ----------
+WORKDIR /tmp
+RUN wget https://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz && \
+    tar -xzf ta-lib-0.4.0-src.tar.gz && \
     cd ta-lib && \
     ./configure --prefix=/usr && \
     make && \
-    make install && \
-    cd .. && \
-    rm -rf ta-lib ta-lib-0.4.0-src.tar.gz
+    make install
 
-# 4. 返回應用程式工作目錄並安裝 Python 依賴
-WORKDIR /usr/src/app
+# ---------- python deps ----------
+WORKDIR /app
 COPY requirements.txt .
 
-# 5. 🚨 關鍵步驟：鎖定 NumPy 1.22.4，並執行所有依賴安裝
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
-    # 鎖定一個與舊版 TA-Lib C 擴展兼容的 NumPy 版本
-    pip install --no-cache-dir "numpy==1.22.4" && \
-    # 這裡會安裝 requirements.txt 中 TA-Lib 的原始碼，但搭配兼容的 NumPy 版本
+# 關鍵：先 numpy → 再其他 → 再 ta-lib
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir numpy==1.26.4 && \
     pip install --no-cache-dir -r requirements.txt
 
-# 6. 複製所有專案文件
+# ---------- copy app ----------
 COPY . .
 
-# 7. 啟動指令
+# ---------- startup self-check ----------
+RUN python - <<'EOF'
+import talib, numpy
+print("TA-Lib OK:", talib.__version__)
+print("NumPy OK:", numpy.__version__)
+EOF
+
+# ---------- run ----------
 CMD ["python", "bot.py"]
