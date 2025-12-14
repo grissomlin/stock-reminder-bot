@@ -1,4 +1,4 @@
-# bot.py (最終運行穩定版 - 整合 Cron 排程與時區)
+# bot.py (最終運行穩定版 - 修正 JobQueue 時區設定)
 
 import os
 import sys
@@ -7,7 +7,7 @@ import logging
 import asyncio
 from datetime import datetime
 import importlib.util 
-from pytz import timezone # 🚨 新增：引入時區模組
+from pytz import timezone 
 
 # --- 設置日誌記錄 (Logging) ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -77,7 +77,6 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 def get_google_sheets_client():
-    """連線到 Google Sheets 服務帳戶。"""
     # ... (此函數內容與原文件保持一致) ...
     if os.environ.get(GOOGLE_CREDENTIALS_ENV):
         logger.info("從環境變數讀取 Google 憑證 (部署模式)...")
@@ -255,17 +254,15 @@ async def periodic_reminder_job(context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"成功向 {USER_CHAT_ID} 發送 {len(alerts)} 個技術指標獨立警報。")
         
     else:
-        # 🚨 移除成功通知：如果沒有警報，就不發送任何訊息
+        # 🚨 移除成功通知
         logger.info("沒有股票符合警報條件。")
 
 
 def setup_scheduling(job_queue):
     """
-    🚨 新增：設定多個市場的 Cron 排程，以台灣時間 (Asia/Taipei) 為準。
+    🚨 修正：設定多個市場的 Cron 排程，使用 Application 內建的 JobQueue。
     """
-    # 設定 APScheduler 預設時區為台灣時間
-    job_defaults = job_queue.job_defaults
-    job_defaults.tzinfo = TAIPEI_TZ 
+    # 🚨 移除 job_defaults 的錯誤引用
 
     # ----------------------------------------------------
     # 🎯 Cron 排程設定 (以台灣時間 Asia/Taipei 為準)
@@ -317,21 +314,18 @@ def initialize_bot_and_scheduler(run_web_server=False):
 
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-    APPLICATION = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    # 🚨 修正：直接在 Application.builder() 中設定 JobQueue 的參數，包括時區
+    APPLICATION = Application.builder().token(TELEGRAM_BOT_TOKEN).job_queue(
+        job_defaults={'coalesce': True, 'max_instances': 3, 'misfire_grace_time': 100},
+        scheduler=AsyncIOScheduler(timezone=TAIPEI_TZ) # 設置時區
+    ).build()
     
-    # 🚨 修正：直接使用 APPLICATION 內建的 job_queue
     job_queue = APPLICATION.job_queue
-    
-    # 1. 設置排程器選項
-    job_defaults = {'coalesce': True, 'max_instances': 3, 'misfire_grace_time': 100}
     
     # 2. 設置 Cron 排程
     setup_scheduling(job_queue) 
     
     async def start_scheduler_after_bot_init(app: Application):
-        # 由於 Application.builder().build() 會自動創建並集成 JobQueue/Scheduler，
-        # 我們只需確保任務已加入。
-        # 在 Application 啟動後，Scheduler 會被自動啟動。
         logger.info("排程器已準備就緒，等待 Application 啟動。")
             
     APPLICATION.post_init = start_scheduler_after_bot_init
