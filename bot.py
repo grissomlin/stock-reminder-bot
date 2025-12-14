@@ -8,6 +8,8 @@ import asyncio
 from datetime import datetime
 import importlib.util 
 from pytz import timezone 
+# 🚨 新增：確保 JobQueue 在此處可用
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters, JobQueue
 
 # --- 設置日誌記錄 (Logging) ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -72,8 +74,9 @@ except Exception as e:
 # --- Google Sheets 基礎處理函數 (保持不變) ---
 import gspread
 import pandas as pd
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+# from telegram import Update # 已經在最前面引入了
+# from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters, JobQueue # 已經在最前面引入了
+
 
 def get_google_sheets_client():
     # ... (此函數內容與原文件保持一致) ...
@@ -259,7 +262,7 @@ async def periodic_reminder_job(context: ContextTypes.DEFAULT_TYPE):
 
 def setup_scheduling(job_queue):
     """
-    設定多個市場的 Cron 排程，使用 Application 內建的 JobQueue。
+    設定多個市場的 Cron 排程。
     """
     # ----------------------------------------------------
     # 🎯 Cron 排程設定 (以台灣時間 Asia/Taipei 為準)
@@ -311,19 +314,23 @@ def initialize_bot_and_scheduler(run_web_server=False):
 
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-    # 🚨 修正：將 job_defaults 參數移到 Application.builder() 中。
-    # 🚨 修正：在 Application.builder().job_queue() 中傳入 scheduler 實例並設定時區。
-    
+    # 1. 定義任務預設值
     JOB_DEFAULTS = {'coalesce': True, 'max_instances': 3, 'misfire_grace_time': 100}
+
+    # 🚨 修正步驟 1：手動創建帶有時區設定的 APScheduler
+    scheduler = AsyncIOScheduler(timezone=TAIPEI_TZ, job_defaults=JOB_DEFAULTS)
     
-    APPLICATION = Application.builder().token(TELEGRAM_BOT_TOKEN).job_queue(
-        scheduler=AsyncIOScheduler(timezone=TAIPEI_TZ)
-    ).defaults(job_defaults=JOB_DEFAULTS).build()
-    
-    job_queue = APPLICATION.job_queue
+    # 🚨 修正步驟 2：手動創建 JobQueue 實例
+    job_queue_instance = JobQueue(scheduler=scheduler, application=None)
+
+    # 🚨 修正步驟 3：將 JobQueue 實例傳入 Application.builder()
+    APPLICATION = Application.builder().token(TELEGRAM_BOT_TOKEN).job_queue(job_queue_instance).build()
+
+    # 🚨 修正步驟 4：將 Application 連結回 JobQueue
+    job_queue_instance.set_application(APPLICATION)
     
     # 2. 設置 Cron 排程
-    setup_scheduling(job_queue) 
+    setup_scheduling(job_queue_instance) 
     
     async def start_scheduler_after_bot_init(app: Application):
         logger.info("排程器已準備就緒，等待 Application 啟動。")
