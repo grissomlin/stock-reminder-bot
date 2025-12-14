@@ -5,7 +5,7 @@
 pandas==2.1.4
 # 🚨 最終修正：強制使用 Linux 預編譯輪子（這將完全繞過 C 編譯問題）
 # 我們使用 0.4.28 版本，它是目前 Py3.11 Linux 環境中最穩定且常見的。
-TA-Lib @ https://pypi2.ricequant.com/packages/TA_Lib-0.4.28-cp311-cp311-linux_x86_64.whl
+TA-Lib==0.4.28
 yfinance==0.2.66
 
 # ===== Networking / HTTP =====
@@ -63,4 +63,5 @@ colorama==0.4.6
 frozendict==2.4.7
 cffi==2.0.0
 pycparser==2.23
+
 
