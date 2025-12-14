@@ -20,9 +20,9 @@ RUN wget -qO- http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz 
     cd .. && \
     rm -rf ta-lib
 
-# 先安裝 numpy (TA-Lib 的核心依賴)
+# 先安裝 numpy (必須 < 2.0 才能與 TA-Lib 相容)
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir numpy==1.26.4
+    pip install --no-cache-dir "numpy<2.0"
 
 # 複製依賴文件並安裝 Python 套件
 COPY requirements.txt ./
