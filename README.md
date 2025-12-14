@@ -16,6 +16,7 @@ The following is a screenshot of the program’s log messages while running on t
 
 本專案使用 **Google Sheets** 作為主要操作介面，而不是建立獨立的資料庫或網頁系統，原因如下：  
 This project uses **Google Sheets** as the main operation interface instead of building a separate database or web system, for the following reasons:
+![googlesheet1](image/googlesheet1.png)
 
 - **免建資料庫與網頁**  
   不需要額外開發後端資料庫或前端 CRUD 系統，降低維護成本。  
@@ -41,7 +42,7 @@ This project uses **Google Sheets** as the main operation interface instead of b
   對個人或小型專案來說，Excel/Google Sheets 已經足夠，不必追求「高大上」的資料庫架構。  
   **Lightweight and personal-friendly solution**  
   For individuals or small projects, Excel/Google Sheets is sufficient without pursuing a complex database architecture.
-
+![googlesheet2](image/googlesheet2.png)
 👉 總結：Google Sheets 同時扮演 **資料存放處**、**操作介面**、**視覺化報表** 三種角色，讓系統設計更簡單、直觀且易於維護。  
 👉 In summary: Google Sheets acts simultaneously as a **data repository**, **operation interface**, and **visual report**, making system design simpler, more intuitive, and easier to maintain.
 
