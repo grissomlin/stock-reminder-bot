@@ -1,4 +1,4 @@
-# Dockerfile (Debian Slim 穩定版 - 推薦用於 TA-Lib)
+# Dockerfile (Debian Slim 穩定版 - 使用預編譯 TA-Lib)
 FROM python:3.11-slim
 
 # 設定工作目錄
@@ -17,11 +17,12 @@ RUN wget -qO- http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz 
     ./configure --prefix=/usr && \
     make && \
     make install && \
+    ldconfig && \
     cd .. && \
     rm -rf ta-lib
 
-# 先安裝 numpy (必須 < 2.0 才能與 TA-Lib 相容)
-RUN pip install --no-cache-dir --upgrade pip && \
+# 升級 pip 並先安裝 numpy < 2.0
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
     pip install --no-cache-dir "numpy<2.0"
 
 # 複製依賴文件並安裝 Python 套件
