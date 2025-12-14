@@ -1,4 +1,4 @@
-# Dockerfile (最終穩定版 - 使用預編譯 TA-Lib 輪子)
+# Dockerfile (最終穩定版 - 只安裝輪子)
 
 # 使用 Debian slim
 FROM python:3.11-slim
@@ -6,17 +6,19 @@ FROM python:3.11-slim
 # 設定工作目錄
 WORKDIR /usr/src/app
 
-# 1. 🚨 僅安裝基礎系統依賴，移除所有 C 編譯工具
+# 1. 🚨 僅安裝必要的系統依賴
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        # 安裝 libffi-dev，確保 Python 擴展可以正常工作
+        # 僅安裝 libffi-dev，用於許多 Python 擴展
         libffi-dev \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# 2. 升級 pip 並安裝基礎套件
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+# 2. 升級 pip 並安裝基礎套件 (包含 numpy)
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
+    # 確保安裝一個與 TA-Lib 兼容的 numpy 版本
+    pip install --no-cache-dir "numpy==1.26.4"
 
-# 3. 複製依賴文件並安裝 Python 套件 (包括 TA-Lib 輪子)
+# 3. 複製依賴文件並安裝 Python 套件 (從 URL 安裝 TA-Lib 輪子)
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
