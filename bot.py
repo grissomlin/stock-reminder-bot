@@ -209,39 +209,62 @@ async def periodic_reminder_job(context: ContextTypes.DEFAULT_TYPE):
 
 # --- 排程設定 (PTB v20+ 官方寫法) ---
 def setup_scheduling(job_queue: JobQueue):
-    job_queue.run_cron(
+    """
+    設定多個市場的 Cron 排程（使用 run_custom 實現 cron）。
+    """
+    # 1. 亞洲盤交易時間 (週一到週五，08:00-13:00，每 30 分鐘：00 和 30)
+    job_queue.run_custom(
         periodic_reminder_job,
-        minute='0,30',
-        hour='8-13',
-        day_of_week='mon-fri',
-        name='Asia Market Scan (08:30-13:30)',
-        timezone=TAIPEI_TZ
+        job_kwargs={
+            'trigger': 'cron',
+            'minute': '0,30',
+            'hour': '8-13',
+            'day_of_week': 'mon-fri',
+            'timezone': TAIPEI_TZ
+        },
+        name='Asia Market Scan (08:30-13:30)'
     )
-    job_queue.run_cron(
+
+    # 2. 歐洲盤 (週一到週五，17:00)
+    job_queue.run_custom(
         periodic_reminder_job,
-        minute='0',
-        hour='17',
-        day_of_week='mon-fri',
-        name='Europe Open Scan (17:00)',
-        timezone=TAIPEI_TZ
+        job_kwargs={
+            'trigger': 'cron',
+            'minute': '0',
+            'hour': '17',
+            'day_of_week': 'mon-fri',
+            'timezone': TAIPEI_TZ
+        },
+        name='Europe Open Scan (17:00)'
     )
-    job_queue.run_cron(
+
+    # 3. 晚盤 (週一到週五，23:00)
+    job_queue.run_custom(
         periodic_reminder_job,
-        minute='0',
-        hour='23',
-        day_of_week='mon-fri',
-        name='Late Scan (23:00)',
-        timezone=TAIPEI_TZ
+        job_kwargs={
+            'trigger': 'cron',
+            'minute': '0',
+            'hour': '23',
+            'day_of_week': 'mon-fri',
+            'timezone': TAIPEI_TZ
+        },
+        name='Late Scan (23:00)'
     )
-    job_queue.run_cron(
+
+    # 4. 美股收盤後 (週六 04:00)
+    job_queue.run_custom(
         periodic_reminder_job,
-        minute='0',
-        hour='4',
-        day_of_week='sat',
-        name='US Close Scan (Sat 04:00)',
-        timezone=TAIPEI_TZ
+        job_kwargs={
+            'trigger': 'cron',
+            'minute': '0',
+            'hour': '4',
+            'day_of_week': 'sat',
+            'timezone': TAIPEI_TZ
+        },
+        name='US Close Scan (Sat 04:00)'
     )
-    logger.info("✅ 已使用 run_cron 設定所有排程（台灣時間）。")
+
+    logger.info("✅ 已使用 run_custom + cron 設定所有排程（台灣時間）。")
 
 # --- 初始化 Bot 和 JobQueue ---
 def initialize_bot_and_scheduler(run_web_server=False):
@@ -295,3 +318,4 @@ if __name__ == '__main__':
         port = int(os.environ.get('PORT', 5000))
         logger.info(f"以 Web 模式啟動 Flask，監聽端口: {port}")
         app.run(host='0.0.0.0', port=port)
+
