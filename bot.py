@@ -1,4 +1,4 @@
-# bot.py (最終運行穩定版 - 修正 JobQueue 構造函數錯誤)
+# bot.py (最終運行穩定版 - 採用 PTB v20+ 官方 JobQueue 穩定寫法)
 
 import os
 import sys
@@ -14,7 +14,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 
-# 🚨 修正：將所有核心 Telegram 類別集中到檔案頂部引入
+# 🚨 導入所有必要的類別
 from telegram import Update
 from telegram.ext import (
     Application, 
@@ -24,7 +24,6 @@ from telegram.ext import (
     filters, 
     JobQueue
 )
-# 🚨 新增：Sheets 相關的導入
 import gspread
 import pandas as pd
 
@@ -314,19 +313,20 @@ def setup_scheduling(job_queue):
 def initialize_bot_and_scheduler(run_web_server=False):
     global APPLICATION
 
-    if not TELEGRAM_BOT_TOKEN:
-        logger.error("TELEGRAM_BOT_TOKEN 未設定")
+    if not TELEGRAM_BOT_TOKEN: 
+        logger.error(f"無法啟動：{TELEGRAM_BOT_TOKEN_ENV} 環境變數未設定。")
+        if not run_web_server:
+            print("\n🚨 本地運行失敗提示：請在終端機中設定 TELEGRAM_BOT_TOKEN 環境變數。\n")
         return False
 
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-    JOB_DEFAULTS = {
-        'coalesce': True,
-        'max_instances': 3,
-        'misfire_grace_time': 100
-    }
+    # 1. 定義任務預設值
+    JOB_DEFAULTS = {'coalesce': True, 'max_instances': 3, 'misfire_grace_time': 100}
 
-    # ✅ 1. 只建立 Application（不要碰 JobQueue）
+    # 🚨 修正核心：採用 PTB 官方推薦的穩定寫法
+    
+    # 1. 建立 Application 實例（不傳入 JobQueue 實例）
     APPLICATION = (
         Application
         .builder()
@@ -334,26 +334,30 @@ def initialize_bot_and_scheduler(run_web_server=False):
         .build()
     )
 
-    # ✅ 2. 取得 Application 內建的 JobQueue
+    # 2. 取得 Application 內建的 JobQueue
     job_queue = APPLICATION.job_queue
 
-    # ✅ 3. 設定你自己的 APScheduler（這步是合法的）
+    # 3. 設定你自己的 APScheduler 實例，確保設定了時區和預設值
     scheduler = AsyncIOScheduler(
         timezone=TAIPEI_TZ,
         job_defaults=JOB_DEFAULTS
     )
+    # 🚨 關鍵步驟：將手動創建的 scheduler 賦予給 JobQueue
     job_queue.scheduler = scheduler
 
-    # ✅ 4. 設定 Cron 排程
-    setup_scheduling(job_queue)
-
-    # handlers
+    # 4. 設置 Cron 排程
+    setup_scheduling(job_queue) 
+    
+    async def start_scheduler_after_bot_init(app: Application):
+        logger.info("排程器已準備就緒，等待 Application 啟動。")
+            
+    APPLICATION.post_init = start_scheduler_after_bot_init
+    
     APPLICATION.add_handler(CommandHandler("start", start_command))
     APPLICATION.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
-
-    logger.info("✅ Bot & JobQueue 初始化完成")
+    
+    logger.info("Bot 和 APScheduler 物件建立成功。")
     return True
-
 
 # --- Flask 服務用於 Railway 健康檢查 (保持不變) ---
 from flask import Flask, jsonify
@@ -394,4 +398,3 @@ if __name__ == '__main__':
         port = int(os.environ.get('PORT', 5000))
         logger.info(f"以 Web 模式 (Flask / Health Check) 啟動，監聽端口: {port}")
         app.run(host='0.0.0.0', port=port)
-
