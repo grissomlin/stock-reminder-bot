@@ -1,7 +1,13 @@
+# requirements.txt (最終穩定運行版)
+
 # ===== Core numeric (順序不可改) =====
-# numpy 已在 Dockerfile 中安裝為 <2.0 (TA-Lib 相容性要求)
+# numpy (由 Dockerfile 安裝)
 pandas==2.1.4
-TA_Lib==0.4.32
+
+# 🚨 修正: 繞過編譯錯誤，強制安裝預編譯的 cp311 Linux 輪子
+# 使用 0.4.28 版本，因其 Linux 輪子在 Python 3.11 環境下最穩定且易於取得。
+TA-Lib @ https://pypi2.ricequant.com/packages/TA_Lib-0.4.28-cp311-cp311-linux_x86_64.whl
+
 # ===== Networking / HTTP =====
 requests==2.32.5
 urllib3==2.6.2
@@ -13,6 +19,7 @@ httpcore==1.0.9
 h11==0.16.0
 websockets==15.0.1
 curl_cffi==0.13.0
+
 # ===== Web / Flask =====
 Flask==3.1.2
 Werkzeug==3.1.4
@@ -21,12 +28,14 @@ MarkupSafe==3.0.3
 itsdangerous==2.2.0
 click==8.3.1
 blinker==1.9.0
+
 # ===== Telegram / Scheduler =====
 python-telegram-bot==22.5
 APScheduler==3.11.1
 tzlocal==5.3.1
 pytz==2025.2
 tzdata==2025.2
+
 # ===== Google API =====
 google-auth==2.41.1
 google-auth-oauthlib==1.2.3
@@ -38,6 +47,7 @@ pyasn1==0.6.1
 pyasn1_modules==0.4.2
 protobuf==6.33.2
 cachetools==6.2.3
+
 # ===== Data / Utils =====
 yfinance==0.2.66
 beautifulsoup4==4.14.3
