@@ -3,6 +3,6 @@ A Telegram bot utilizing Python, yfinance, and TA-Lib to perform technical analy
 
 ![telegram1](image/telegram.png)
 
-![telegram2](image/螢幕擷取畫面 2025-12-14 182247.png)
+![telegram2](image/2.png)
 
-![telegram3](image/螢幕擷取畫面 2025-12-14 182358.png)
+![telegram3](image/3.png)
