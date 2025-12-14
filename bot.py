@@ -1,4 +1,4 @@
-# bot.py (最終運行穩定版 - 修正 JobQueue 時區設定)
+# bot.py (最終運行穩定版 - 修正 Application.builder() API 錯誤)
 
 import os
 import sys
@@ -36,7 +36,7 @@ APPLICATION = None
 USER_CHAT_ID = None
 ANALYZE_FUNC = None 
 
-# --- 核心模組加載 ---
+# --- 核心模組加載 (保持不變) ---
 try:
     module_name = "ta_analyzer"
     module_path = os.path.join(current_dir, f"{module_name}.py")
@@ -69,8 +69,7 @@ except Exception as e:
     ta_helpers = DummyHelpers()
 
 
-# --- Google Sheets 基礎處理函數 ---
-
+# --- Google Sheets 基礎處理函數 (保持不變) ---
 import gspread
 import pandas as pd
 from telegram import Update
@@ -179,7 +178,7 @@ def fetch_stock_data_for_reminder():
         logger.error(f"讀取試算表資料時發生錯誤: {e}")
         return pd.DataFrame()
 
-# --- Telegram Bot 函數 ---
+# --- Telegram Bot 函數 (保持不變) ---
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # ... (此函數內容與原文件保持一致) ...
@@ -260,10 +259,8 @@ async def periodic_reminder_job(context: ContextTypes.DEFAULT_TYPE):
 
 def setup_scheduling(job_queue):
     """
-    🚨 修正：設定多個市場的 Cron 排程，使用 Application 內建的 JobQueue。
+    設定多個市場的 Cron 排程，使用 Application 內建的 JobQueue。
     """
-    # 🚨 移除 job_defaults 的錯誤引用
-
     # ----------------------------------------------------
     # 🎯 Cron 排程設定 (以台灣時間 Asia/Taipei 為準)
     # ----------------------------------------------------
@@ -314,11 +311,14 @@ def initialize_bot_and_scheduler(run_web_server=False):
 
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-    # 🚨 修正：直接在 Application.builder() 中設定 JobQueue 的參數，包括時區
+    # 🚨 修正：將 job_defaults 參數移到 Application.builder() 中。
+    # 🚨 修正：在 Application.builder().job_queue() 中傳入 scheduler 實例並設定時區。
+    
+    JOB_DEFAULTS = {'coalesce': True, 'max_instances': 3, 'misfire_grace_time': 100}
+    
     APPLICATION = Application.builder().token(TELEGRAM_BOT_TOKEN).job_queue(
-        job_defaults={'coalesce': True, 'max_instances': 3, 'misfire_grace_time': 100},
-        scheduler=AsyncIOScheduler(timezone=TAIPEI_TZ) # 設置時區
-    ).build()
+        scheduler=AsyncIOScheduler(timezone=TAIPEI_TZ)
+    ).defaults(job_defaults=JOB_DEFAULTS).build()
     
     job_queue = APPLICATION.job_queue
     
@@ -336,7 +336,7 @@ def initialize_bot_and_scheduler(run_web_server=False):
     logger.info("Bot 和 APScheduler 物件建立成功。")
     return True
 
-# --- Flask 服務用於 Railway 健康檢查 ---
+# --- Flask 服務用於 Railway 健康檢查 (保持不變) ---
 from flask import Flask, jsonify
 app = Flask(__name__)
 
