@@ -1,10 +1,14 @@
 # stock-reminder-bot
 A Telegram bot utilizing Python, yfinance, and TA-Lib to perform technical analysis on a Google Sheet list of stock tickers and send timely alerts via the APScheduler. (中文：🤖 一個 Telegram 機器人，用於對 Google Sheets 內的股票代號進行技術分析，並在指標觸發時即時發送警報通知。)
+
 下圖是 Telegram 傳送的技術指標通知截圖，顯示雲端系統對台股標的的即時分析與警報。
 The image below shows a Telegram-based technical indicator alert screenshot, displaying real-time cloud-based analysis and signal notifications for Taiwan-listed ETFs.
 ![telegram1](image/telegram.png)
 
+
 ![telegram2](image/2.png)
+
+
 以下是程式在 Railway 平台上執行時的 log 訊息截圖：
 The following is a screenshot of the program’s log messages while running on the Railway platform:
 ![telegram3](image/3.png)
@@ -45,4 +49,16 @@ This project uses **Google Sheets** as the main operation interface instead of b
 ![googlesheet2](image/googlesheet2.png)
 👉 總結：Google Sheets 同時扮演 **資料存放處**、**操作介面**、**視覺化報表** 三種角色，讓系統設計更簡單、直觀且易於維護。  
 👉 In summary: Google Sheets acts simultaneously as a **data repository**, **operation interface**, and **visual report**, making system design simpler, more intuitive, and easier to maintain.
+
+### 舊版回顧 / Previous Version
+
+📱 這張圖片是我幾年前開發的 **LINE Bot**，部署在 **Heroku** 平台，用來傳送股票技術指標的提醒訊息。  
+後來因為 Heroku 開始收費，加上我專注在回測策略，這個版本就沒有再繼續維護。  
+
+📱 This image shows the **LINE Bot** I developed a few years ago, deployed on the **Heroku** platform, which was used to send stock technical indicator alerts.  
+Later, as Heroku introduced paid plans and I shifted my focus to backtesting strategies, this version was no longer maintained.
+
+
+![googlesheet2](image/oldversion.png)
+
 
