@@ -1,4 +1,4 @@
-# bot.py (最終運行穩定版 - 修正 Application.builder() API 錯誤)
+# bot.py (最終運行穩定版 - 修正 NameError)
 
 import os
 import sys
@@ -8,8 +8,21 @@ import asyncio
 from datetime import datetime
 import importlib.util 
 from pytz import timezone 
-# 🚨 新增：確保 JobQueue 在此處可用
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters, JobQueue
+
+# 🚨 修正：將所有核心 Telegram 類別集中到檔案頂部引入
+from telegram import Update
+from telegram.ext import (
+    Application, 
+    CommandHandler, 
+    ContextTypes, 
+    MessageHandler, 
+    filters, 
+    JobQueue
+)
+# 🚨 新增：Sheets 相關的導入
+import gspread
+import pandas as pd
+
 
 # --- 設置日誌記錄 (Logging) ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -72,10 +85,7 @@ except Exception as e:
 
 
 # --- Google Sheets 基礎處理函數 (保持不變) ---
-import gspread
-import pandas as pd
-# from telegram import Update # 已經在最前面引入了
-# from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters, JobQueue # 已經在最前面引入了
+# 🚨 移除重複的導入語句 (import gspread, import pandas, from telegram...)
 
 
 def get_google_sheets_client():
@@ -324,6 +334,7 @@ def initialize_bot_and_scheduler(run_web_server=False):
     job_queue_instance = JobQueue(scheduler=scheduler, application=None)
 
     # 🚨 修正步驟 3：將 JobQueue 實例傳入 Application.builder()
+    # Application.builder() 接受 job_queue 參數，而不是 job_queue 實例本身
     APPLICATION = Application.builder().token(TELEGRAM_BOT_TOKEN).job_queue(job_queue_instance).build()
 
     # 🚨 修正步驟 4：將 Application 連結回 JobQueue
