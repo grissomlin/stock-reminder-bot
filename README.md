@@ -62,3 +62,90 @@ Later, as Heroku introduced paid plans and I shifted my focus to backtesting str
 ![googlesheet2](image/oldversion.png)
 
 
+## 📖 延伸閱讀 / Further Reading 👉 [我的方格子文章 / My Vocus Articles](https://vocus.cc/salon/grissomlin/room/693e915f93e86fa746e87698)
+
+📊 六大市場股票統計數據簡介 / Stock Market Statistics Overview
+
+本研究並非僅分析單一指數走勢，而是以各市場主要指數作為市場代表與分類依據，
+實際統計對象為各國交易所中數千家上市公司之個股資料，
+透過大量樣本進行整體市場結構與動能行為的統計分析。
+
+This study does not focus solely on index performance.
+Instead, major indices are used as market representatives and classification references,
+while the actual analysis is conducted on thousands of individual stocks listed in each market,
+enabling large-sample statistical observations of market structure and momentum behavior.
+
+中國 (China)
+
+市場代表指數：滬深 300 (CSI 300)
+作為中國股市的市場分類基準，
+實際統計涵蓋上海與深圳交易所中大量 A 股上市公司，
+用以分析整體市場動能分布與結構特徵。
+
+Market Reference Index: CSI 300
+Used as a market classification benchmark,
+while the statistical analysis includes a large population of A-share stocks
+from the Shanghai and Shenzhen exchanges.
+
+香港 (Hong Kong)
+
+市場代表指數：恒生指數 (HSI)
+指數作為市場代表，
+實際統計對象為香港交易所中廣泛的上市公司樣本，
+涵蓋主板與主要產業族群。
+
+Market Reference Index: Hang Seng Index (HSI)
+Used as a market proxy,
+with analysis conducted on a broad set of listed companies
+across major sectors on the Hong Kong Exchange.
+
+美國 (United States)
+
+市場代表指數：道瓊工業指數、S&P 500、NASDAQ Composite
+以多指數作為市場分類參考，
+實際統計涵蓋 NYSE 與 NASDAQ 中數千家上市公司，
+反映不同市值與產業結構下的市場行為。
+
+Market Reference Indices: Dow Jones, S&P 500, NASDAQ Composite
+Multiple indices are used for market classification,
+while the analysis covers thousands of stocks listed on NYSE and NASDAQ,
+capturing behaviors across market capitalizations and sectors.
+
+韓國 (South Korea)
+
+市場代表指數：KOSPI
+作為市場結構參考指數，
+實際統計對象涵蓋韓國交易所中大多數上市公司，
+用於觀察市場整體趨勢與個股分布特性。
+
+Market Reference Index: KOSPI
+Used as a structural market reference,
+with statistical analysis covering the majority of listed companies
+on the Korea Exchange.
+
+日本 (Japan)
+
+市場代表指數：日經 225
+作為市場分類與比較基準，
+實際分析涵蓋東京證券交易所中大量上市企業樣本，
+以捕捉市場長期與短期動能特徵。
+
+Market Reference Index: Nikkei 225
+Used as a comparative benchmark,
+while analysis includes a broad sample of listed companies
+on the Tokyo Stock Exchange.
+
+台灣 (Taiwan)
+
+市場代表指數：台灣加權指數 (^TWII)
+指數作為市場代表與整體方向參考，
+實際統計涵蓋台灣證券交易所中數千筆個股資料，
+反映台股市場的整體結構與動能行為。
+
+Market Reference Index: Taiwan Weighted Index (^TWII)
+Used as a market proxy,
+with statistical analysis conducted on thousands of individual stocks
+listed on the Taiwan Stock Exchange.
+
+
+
