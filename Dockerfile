@@ -1,49 +1,40 @@
-# ===============================
-# Stable TA-Lib Dockerfile
-# ===============================
+# Use a standard Python base image (avoid alpine for complex C extensions)
 FROM python:3.10-slim
 
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
-
-WORKDIR /app
-
-# ---------- system deps ----------
+# Install system dependencies needed for building TA-Lib
 RUN apt-get update && apt-get install -y \
-    build-essential \
     wget \
-    curl \
-    ca-certificates \
-    libssl-dev \
+    gcc \
+    make \
+    # Clean up apt lists to keep image size down
     && rm -rf /var/lib/apt/lists/*
 
-# ---------- build TA-Lib C lib ----------
-WORKDIR /tmp
-RUN wget https://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz && \
-    tar -xzf ta-lib-0.4.0-src.tar.gz && \
-    cd ta-lib && \
-    ./configure --prefix=/usr && \
-    make && \
-    make install
+# Download, compile, and install the TA-Lib C library
+WORKDIR /tmp/ta-lib
+# Use wget to fetch the source directly from GitHub releases
+RUN wget https://github.com/TA-Lib/ta-lib/releases/download/v0.4.0/ta-lib-0.4.0-src.tar.gz
+RUN tar -xvf ta-lib-0.4.0-src.tar.gz
+WORKDIR /tmp/ta-lib/ta-lib
+RUN ./configure --prefix=/usr
+RUN make
+RUN make install
 
-# ---------- python deps ----------
+# Install the Python wrapper for TA-Lib using pip
 WORKDIR /app
 COPY requirements.txt .
+# Use --no-cache-dir to prevent storing cache data in the image
+# It might also be necessary to manage numpy versions explicitly due to compatibility issues
+RUN pip install --no-cache-dir TA-Lib
 
-# 關鍵：先 numpy → 再其他 → 再 ta-lib
-RUN pip install --upgrade pip && \
-    pip install --no-cache-dir numpy==1.26.4 && \
-    pip install --no-cache-dir -r requirements.txt
+# Copy the rest of your application code
+# COPY . /app
 
-# ---------- copy app ----------
+# Define the command to run your application (example)
+# CMD ["python", "your_app_script.py"]
+
+# 6. 複製所有專案文件
 COPY . .
 
-# ---------- startup self-check ----------
-RUN python - <<'EOF'
-import talib, numpy
-print("TA-Lib OK:", talib.__version__)
-print("NumPy OK:", numpy.__version__)
-EOF
-
-# ---------- run ----------
+# 7. 啟動指令
 CMD ["python", "bot.py"]
+
