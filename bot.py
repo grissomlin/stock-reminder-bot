@@ -1,4 +1,4 @@
-# bot.py (最終運行穩定版 - 修正 NameError)
+# bot.py (最終運行穩定版 - 修正 JobQueue 構造函數錯誤)
 
 import os
 import sys
@@ -8,6 +8,11 @@ import asyncio
 from datetime import datetime
 import importlib.util 
 from pytz import timezone 
+
+# --- 設置日誌記錄 (Logging) ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
 
 # 🚨 修正：將所有核心 Telegram 類別集中到檔案頂部引入
 from telegram import Update
@@ -22,11 +27,6 @@ from telegram.ext import (
 # 🚨 新增：Sheets 相關的導入
 import gspread
 import pandas as pd
-
-
-# --- 設置日誌記錄 (Logging) ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
 
 
 # --- 設定路徑和變數 ---
@@ -85,8 +85,6 @@ except Exception as e:
 
 
 # --- Google Sheets 基礎處理函數 (保持不變) ---
-# 🚨 移除重複的導入語句 (import gspread, import pandas, from telegram...)
-
 
 def get_google_sheets_client():
     # ... (此函數內容與原文件保持一致) ...
@@ -327,14 +325,14 @@ def initialize_bot_and_scheduler(run_web_server=False):
     # 1. 定義任務預設值
     JOB_DEFAULTS = {'coalesce': True, 'max_instances': 3, 'misfire_grace_time': 100}
 
-    # 🚨 修正步驟 1：手動創建帶有時區設定的 APScheduler
+    # 🚨 修正步驟 1：手動創建帶有時區設定的 APScheduler (包含 job_defaults)
     scheduler = AsyncIOScheduler(timezone=TAIPEI_TZ, job_defaults=JOB_DEFAULTS)
     
-    # 🚨 修正步驟 2：手動創建 JobQueue 實例
-    job_queue_instance = JobQueue(scheduler=scheduler, application=None)
+    # 🚨 修正步驟 2：手動創建 JobQueue 實例，不再傳入 'scheduler=' 關鍵字
+    job_queue_instance = JobQueue(scheduler, application=None)
 
     # 🚨 修正步驟 3：將 JobQueue 實例傳入 Application.builder()
-    # Application.builder() 接受 job_queue 參數，而不是 job_queue 實例本身
+    # 我們只需要傳入 JobQueue 實例
     APPLICATION = Application.builder().token(TELEGRAM_BOT_TOKEN).job_queue(job_queue_instance).build()
 
     # 🚨 修正步驟 4：將 Application 連結回 JobQueue
