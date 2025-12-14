@@ -1,6 +1,6 @@
-# Dockerfile (最終穩定版 - 採用 Python 3.10 + C 庫安裝 + 輪子解決綁定)
+# Dockerfile (最終穩定版 - 採用 Python 3.10 + NumPy 1.22.4 編譯)
 
-# 1. 鎖定使用 Python 3.10 (經證實 C 庫編譯成功)
+# 1. 鎖定使用 Python 3.10
 FROM python:3.10-slim
 
 # 設定工作目錄
@@ -26,15 +26,15 @@ RUN wget https://github.com/TA-Lib/ta-lib/releases/download/v0.4.0/ta-lib-0.4.0-
     cd .. && \
     rm -rf ta-lib ta-lib-0.4.0-src.tar.gz
 
-# 4. 返回應用程式工作目錄並複製依賴文件
+# 4. 返回應用程式工作目錄並安裝 Python 依賴
 WORKDIR /usr/src/app
 COPY requirements.txt .
 
-# 5. 🚨 關鍵步驟：鎖定 NumPy 1.22.4，並安裝 requirements.txt (內含 TA-Lib 輪子)
+# 5. 🚨 關鍵步驟：鎖定 NumPy 1.22.4，並執行所有依賴安裝
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
     # 鎖定一個與舊版 TA-Lib C 擴展兼容的 NumPy 版本
     pip install --no-cache-dir "numpy==1.22.4" && \
-    # 從 requirements.txt 的 URL 安裝 TA-Lib 輪子，繞過編譯失敗
+    # 這裡會安裝 requirements.txt 中 TA-Lib 的原始碼，但搭配兼容的 NumPy 版本
     pip install --no-cache-dir -r requirements.txt
 
 # 6. 複製所有專案文件
