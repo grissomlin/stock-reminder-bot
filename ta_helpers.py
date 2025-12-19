@@ -233,30 +233,52 @@ def process_single_signal(
 # 🚨 關鍵新增：get_static_link 函式 - 解決 bot.py 報錯
 # ----------------------------------------------------------------------
 def get_static_link(stock_code: str, provider: str) -> str:
-    """
-    根據股票代號和提供者生成靜態連結，供 Telegram 訊息使用。
-    """
     code = str(stock_code).strip()
-    provider = str(provider).strip().upper()
-    
-    # 處理空代號或提供者
-    if not code:
-        return "https://www.google.com" # 預設連結
+    clean_code = code.replace('^', '').upper()
+    provider = str(provider).strip()
+
+    # --- 1. 玩股網全球資產對照表 (Key 為 Yahoo 代號, Value 為 玩股網網址路徑) ---
+    wantgoo_map = {
+        "GSPC": "sp5", "IXIC": "ixic", "SOX": "sox", "RUT": "rut",
+        "GDAXI": "dax", "FTSE": "ftse", "FCHI": "cac", "N225": "n225",
+        "HSI": "hsi", "000001.SS": "shcomp", "399001.SZ": "szcomp",
+        "000300.SS": "csi300", "KS11": "kospi", "BSESN": "sensex",
+        "BTC-USD": "btc", "GC=F": "gold", "SI=F": "silver",
+        "CL=F": "oil", "BZ=F": "brent", "HG=F": "copper",
+        "ZS=F": "soybean", "NG=F": "natgas", "TWD=X": "usdtwd",
+        "CNY=X": "usdcny", "JPY=X": "usdjpy"
+    }
+
+    # --- 2. 判斷邏輯 ---
+
+    # A. 台灣加權指數 (特殊路徑)
+    if clean_code == "TWII":
+        return "https://www.wantgoo.com/index/0000"
+
+    # B. 處理台股掛牌資產 (.tw / .two)
+    if code.lower().endswith(('.tw', '.two')):
+        pure_code = code.split('.')[0] # 取小數點左邊 (如 00763U)
         
-    if provider == 'TWSE':
-        # 台灣證券交易所或 Yahoo 台灣股市
-        return f"https://tw.stock.yahoo.com/q/q?s={code}"
-    
-    elif provider == 'US':
-        # 美股 (例如使用 Yahoo Finance)
-        return f"https://finance.yahoo.com/quote/{code}"
+        # 🚨 ETF 判斷邏輯：代號為 00 開頭，或是 5 位數以上含英文字母的 ETF 代號
+        if pure_code.startswith('00') or len(pure_code) >= 5:
+            return f"https://www.wantgoo.com/stock/etf/{pure_code}/technical-chart"
+        else:
+            # 一般台股個股
+            return f"https://www.wantgoo.com/stock/{pure_code}/technical-chart"
+
+    # C. 處理其餘全球資產 (國際指數, 比特幣, ADR, 原物料, 幣別)
+    global_categories = ["國際指數", "比特幣", "ADR", "原物料", "幣別"]
+    if any(cat in provider for cat in global_categories):
+        # 先查表 (例如 GSPC -> sp5)
+        if clean_code in wantgoo_map:
+            path = wantgoo_map[clean_code]
+        else:
+            # ADR 自動處理 (TSM.US -> tsm)
+            path = clean_code.split('.')[0].split('=')[0].split('-')[0].lower()
         
-    elif provider == 'HK':
-        # 港股 (例如使用 AAStocks)
-        return f"http://www.aastocks.com/tc/stocks/quote/quick-quote.aspx?symbol={code}"
-        
-    else:
-        # 預設使用 Google Finance 查詢
-        # 對於台股，通常是 "代號.TW" 或直接代號
-        return f"https://www.google.com/finance/quote/{code}"
+        return f"https://www.wantgoo.com/global/{path}"
+
+    # D. 預設回傳 Google Finance
+    return f"https://www.google.com/finance/quote/{code}"
+
 # ----------------------------------------------------------------------
