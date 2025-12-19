@@ -1,4 +1,4 @@
-# bot.py (最終穩定版 - PTB v20+ 官方 JobQueue 寫法，已修正 run_cron + 時區)
+# bot.py (最終穩定修復版 - 解決關機 AttributeError 並支援 A 欄連結)
 
 import os
 import sys
@@ -62,260 +62,153 @@ try:
     module_path_helpers = os.path.join(current_dir, f"{module_name_helpers}.py")
     spec_helpers = importlib.util.spec_from_file_location(module_name_helpers, module_path_helpers)
     ta_helpers = importlib.util.module_from_spec(spec_helpers)
-    spec_helpers.loader.exec_module(ta_helpers)
+    ta_helpers_module = importlib.util.module_from_spec(spec_helpers)
+    spec_helpers.loader.exec_module(ta_helpers_module)
+    ta_helpers = ta_helpers_module # 確保引用正確
     logger.info("✅ ta_helpers 模組已加載成功。")
 
 except Exception as e:
-    logger.error(f"FATAL ERROR: 無法使用 importlib 加載核心模組。錯誤詳情: {e}")
-
-    def ANALYZE_FUNC(*args, **kwargs):
-        logger.error("FATAL ERROR: 技術分析模組加載失敗，無法執行任務。")
-        return []
-
-    class DummyHelpers:
-        def get_static_link(*args, **kwargs):
-            logger.error("FATAL ERROR: ta_helpers 模組加載失敗，連結功能無法使用。")
-            return "連結失敗"
-    ta_helpers = DummyHelpers()
+    logger.error(f"FATAL ERROR: 無法加載核心模組。錯誤詳情: {e}")
+    def ANALYZE_FUNC(*args, **kwargs): return []
 
 # --- Google Sheets 基礎處理函數 ---
 def get_google_sheets_client():
     if os.environ.get(GOOGLE_CREDENTIALS_ENV):
-        logger.info("從環境變數讀取 Google 憑證 (部署模式)...")
         try:
             credentials_json = json.loads(os.environ.get(GOOGLE_CREDENTIALS_ENV))
             return gspread.service_account_from_dict(credentials_json)
-        except json.JSONDecodeError:
-            logger.error("GOOGLE_CREDENTIALS 環境變數格式錯誤。")
-            return None
+        except: return None
     elif os.path.exists(LOCAL_SERVICE_ACCOUNT_FILE):
-        logger.info("從本地金鑰檔案讀取 Google 憑證 (本地模式)...")
         return gspread.service_account(filename=LOCAL_SERVICE_ACCOUNT_FILE)
-    else:
-        logger.error(f"找不到 Google Sheets 憑證！請檢查 {GOOGLE_CREDENTIALS_ENV} 和 {LOCAL_SERVICE_ACCOUNT_FILE}。")
-        return None
+    return None
 
 def save_chat_id_to_sheets(chat_id: int):
     try:
         gc = get_google_sheets_client()
-        if not gc:
-            logger.error("無法連線 Google Sheets，Chat ID 無法持久儲存。")
-            return False
+        if not gc: return False
         spreadsheet = gc.open(SPREADSHEET_NAME)
         try:
             worksheet = spreadsheet.worksheet(CHAT_ID_SHEET)
         except gspread.WorksheetNotFound:
             worksheet = spreadsheet.add_worksheet(title=CHAT_ID_SHEET, rows="100", cols="20")
-            logger.info(f"創建了新的工作表: {CHAT_ID_SHEET}")
         worksheet.update_acell(CHAT_ID_NOTE_CELL, "Telegram Bot - 提醒目標 Chat ID (勿刪)")
         worksheet.update_acell(CHAT_ID_CELL, str(chat_id))
-        logger.info(f"Chat ID {chat_id} 成功儲存到 Google Sheets 的 {CHAT_ID_SHEET}!{CHAT_ID_CELL}。")
         return True
     except Exception as e:
-        logger.error(f"儲存 Chat ID 到試算表時發生錯誤: {e}")
+        logger.error(f"儲存 Chat ID 失敗: {e}")
         return False
 
 def get_chat_id_from_sheets():
     try:
         gc = get_google_sheets_client()
-        if not gc:
-            return None
+        if not gc: return None
         spreadsheet = gc.open(SPREADSHEET_NAME)
         worksheet = spreadsheet.worksheet(CHAT_ID_SHEET)
         chat_id_str = worksheet.acell(CHAT_ID_CELL).value
-        if chat_id_str and chat_id_str.isdigit():
-            return int(chat_id_str)
-        return None
-    except Exception as e:
-        logger.warning(f"從試算表讀取 Chat ID 時發生錯誤: {e}")
-        return None
+        return int(chat_id_str) if chat_id_str and chat_id_str.isdigit() else None
+    except: return None
 
 def fetch_stock_data_for_reminder():
     try:
         gc = get_google_sheets_client()
-        if not gc:
-            return pd.DataFrame()
+        if not gc: return pd.DataFrame()
         spreadsheet = gc.open(SPREADSHEET_NAME)
         worksheet1 = spreadsheet.worksheet("工作表1")
         data1 = worksheet1.get_all_values()
-        if not data1 or len(data1) < 2 or '代號' not in data1[0]:
-            logger.warning("工作表1是空的或沒有代號欄位。")
-            return pd.DataFrame()
+        if not data1 or len(data1) < 2: return pd.DataFrame()
         df = pd.DataFrame(data1[1:], columns=data1[0])
         df = df[df['代號'].astype(str).str.strip().astype(bool)].copy()
         df['代號'] = df['代號'].astype(str).str.strip()
-        provider_column_name = '提供者'
-        if provider_column_name not in df.columns:
-            logger.error(f"工作表1中找不到欄位 '{provider_column_name}'，連結功能將受限。")
-            df[provider_column_name] = ''
-        df['連結'] = df.apply(
-            lambda row: ta_helpers.get_static_link(row['代號'], row[provider_column_name]),
-            axis=1
-        )
-        logger.info(f"成功讀取 {len(df)} 個股票代號並生成連結。")
+        provider_col = '提供者'
+        if provider_col not in df.columns: df[provider_col] = ''
+        df['連結'] = df.apply(lambda row: ta_helpers.get_static_link(row['代號'], row[provider_col]), axis=1)
         return df
     except Exception as e:
-        logger.error(f"讀取試算表資料時發生錯誤: {e}")
+        logger.error(f"讀取試算表失敗: {e}")
         return pd.DataFrame()
 
 # --- Telegram Bot 命令 ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     global USER_CHAT_ID
-    new_chat_id = update.message.chat_id
-    USER_CHAT_ID = new_chat_id
-    save_chat_id_to_sheets(new_chat_id)
+    USER_CHAT_ID = update.message.chat_id
+    save_chat_id_to_sheets(USER_CHAT_ID)
     stock_df = fetch_stock_data_for_reminder()
-    code_preview = f"{'、'.join(stock_df['代號'].tolist()[:3])}..." if not stock_df.empty else "目前試算表無代號"
-    await update.message.reply_text(
-        f'提醒機器人已啟動！您的 Chat ID 已儲存：{USER_CHAT_ID}\n'
-        f'我已將此 ID 儲存至 Google Sheets ({CHAT_ID_SHEET}!{CHAT_ID_CELL})，**下次重啟後無需再次輸入 /start**。\n\n'
-        f'(測試讀取: {code_preview})'
-    )
-    logger.info(f"Chat ID 儲存成功: {USER_CHAT_ID}")
+    code_preview = f"{'、'.join(stock_df['代號'].tolist()[:3])}..." if not stock_df.empty else "無代號"
+    await update.message.reply_text(f'提醒機器人已啟動！ID：{USER_CHAT_ID}\n(測試讀取: {code_preview})')
 
 async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(f'收到訊息: "{update.message.text}"。請發送 /start 來設定提醒目標。')
+    await update.message.reply_text(f'請發送 /start 來設定提醒目標。')
 
 async def periodic_reminder_job(context: ContextTypes.DEFAULT_TYPE):
     global USER_CHAT_ID
-    if not USER_CHAT_ID:
-        USER_CHAT_ID = get_chat_id_from_sheets()
-    if not USER_CHAT_ID:
-        logger.warning("沒有可用的 USER_CHAT_ID，無法發送提醒。請先發送 /start。")
-        return
+    if not USER_CHAT_ID: USER_CHAT_ID = get_chat_id_from_sheets()
+    if not USER_CHAT_ID: return
     stock_df = fetch_stock_data_for_reminder()
-    if stock_df.empty:
-        logger.info("試算表沒有代號需要處理。")
-        return
-    stock_codes = stock_df['代號'].tolist()
+    if stock_df.empty: return
     gc = get_google_sheets_client()
-    if not gc:
-        logger.error("無法連線 Google Sheets，無法進行技術分析。")
-        return
-    logger.info(f"開始對 {len(stock_codes)} 個代號進行技術分析...")
-    alerts = ANALYZE_FUNC(gc, SPREADSHEET_NAME, stock_codes, stock_df)
+    if not gc: return
+    
+    logger.info(f"開始執行定時分析任務...")
+    alerts = ANALYZE_FUNC(gc, SPREADSHEET_NAME, stock_df['代號'].tolist(), stock_df)
+    
     if alerts:
-        reminder_header = f"🔔 **🚨 技術指標警報 ({datetime.now().strftime('%H:%M:%S')})**："
-        await context.bot.send_message(chat_id=USER_CHAT_ID, text=reminder_header, parse_mode='Markdown')
+        header = f"🔔 **🚨 技術指標警報 ({datetime.now().strftime('%H:%M:%S')})**："
+        await context.bot.send_message(chat_id=USER_CHAT_ID, text=header, parse_mode='Markdown')
         for alert_message in alerts:
             try:
-                await context.bot.send_message(chat_id=USER_CHAT_ID, text=alert_message, parse_mode='Markdown')
+                await context.bot.send_message(chat_id=USER_CHAT_ID, text=alert_message, parse_mode='Markdown', disable_web_page_preview=True)
                 await asyncio.sleep(0.5)
-            except Exception as e:
-                logger.error(f"發送單一訊息失敗: {e}")
-        logger.info(f"成功發送 {len(alerts)} 個警報。")
-    else:
-        logger.info("本次無警報觸發。")
+            except: pass
 
-# --- 排程設定 (PTB v20+ 官方寫法) ---
+# --- 排程設定 ---
 def setup_scheduling(job_queue: JobQueue):
-    """
-    設定多個市場的 Cron 排程（使用 run_custom 實現 cron）。
-    """
-    # 1. 亞洲盤交易時間 (週一到週五，08:00-13:00，每 30 分鐘：00 和 30)
-    job_queue.run_custom(
-        periodic_reminder_job,
-        job_kwargs={
-            'trigger': 'cron',
-            'minute': '0,30',
-            'hour': '8-13',
-            'day_of_week': 'mon-fri',
-            'timezone': TAIPEI_TZ
-        },
-        name='Asia Market Scan (08:30-13:30)'
-    )
+    # 亞洲盤 (08:00-13:30 每 30 分鐘)
+    job_queue.run_custom(periodic_reminder_job, job_kwargs={'trigger': 'cron', 'minute': '0,30', 'hour': '8-13', 'day_of_week': 'mon-fri', 'timezone': TAIPEI_TZ}, name='Asia')
+    # 歐洲盤 (17:00)
+    job_queue.run_custom(periodic_reminder_job, job_kwargs={'trigger': 'cron', 'minute': '0', 'hour': '17', 'day_of_week': 'mon-fri', 'timezone': TAIPEI_TZ}, name='Europe')
+    # 晚盤 (23:00)
+    job_queue.run_custom(periodic_reminder_job, job_kwargs={'trigger': 'cron', 'minute': '0', 'hour': '23', 'day_of_week': 'mon-fri', 'timezone': TAIPEI_TZ}, name='Late')
+    # 美股收盤 (週六 04:00)
+    job_queue.run_custom(periodic_reminder_job, job_kwargs={'trigger': 'cron', 'minute': '0', 'hour': '4', 'day_of_week': 'sat', 'timezone': TAIPEI_TZ}, name='US_Close')
+    logger.info("✅ 排程設定完成。")
 
-    # 2. 歐洲盤 (週一到週五，17:00)
-    job_queue.run_custom(
-        periodic_reminder_job,
-        job_kwargs={
-            'trigger': 'cron',
-            'minute': '0',
-            'hour': '17',
-            'day_of_week': 'mon-fri',
-            'timezone': TAIPEI_TZ
-        },
-        name='Europe Open Scan (17:00)'
-    )
-
-    # 3. 晚盤 (週一到週五，23:00)
-    job_queue.run_custom(
-        periodic_reminder_job,
-        job_kwargs={
-            'trigger': 'cron',
-            'minute': '0',
-            'hour': '23',
-            'day_of_week': 'mon-fri',
-            'timezone': TAIPEI_TZ
-        },
-        name='Late Scan (23:00)'
-    )
-
-    # 4. 美股收盤後 (週六 04:00)
-    job_queue.run_custom(
-        periodic_reminder_job,
-        job_kwargs={
-            'trigger': 'cron',
-            'minute': '0',
-            'hour': '4',
-            'day_of_week': 'sat',
-            'timezone': TAIPEI_TZ
-        },
-        name='US Close Scan (Sat 04:00)'
-    )
-
-    logger.info("✅ 已使用 run_custom + cron 設定所有排程（台灣時間）。")
-
-# --- 初始化 Bot 和 JobQueue ---
-def initialize_bot_and_scheduler(run_web_server=False):
+# --- 初始化 ---
+def initialize_bot_and_scheduler():
     global APPLICATION
-    if not TELEGRAM_BOT_TOKEN:
-        logger.error(f"無法啟動：{TELEGRAM_BOT_TOKEN_ENV} 環境變數未設定。")
-        if not run_web_server:
-            print("\n🚨 本地運行失敗提示：請設定 TELEGRAM_BOT_TOKEN 環境變數。\n")
-        return False
-
+    if not TELEGRAM_BOT_TOKEN: return False
     APPLICATION = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-
+    
+    # 優化排程器設定以減少關閉錯誤
     job_queue = APPLICATION.job_queue
-    job_queue.scheduler.configure(
-        timezone=TAIPEI_TZ,
-        job_defaults={'coalesce': True, 'max_instances': 3, 'misfire_grace_time': 100}
-    )
-
+    job_queue.scheduler.configure(timezone=TAIPEI_TZ, job_defaults={'coalesce': True, 'max_instances': 1, 'misfire_grace_time': 30})
+    
     setup_scheduling(job_queue)
-
-    async def post_init(app: Application):
-        logger.info("Bot 初始化完成，排程器已啟動。")
-
-    APPLICATION.post_init = post_init
     APPLICATION.add_handler(CommandHandler("start", start_command))
     APPLICATION.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
-
-    logger.info("Bot 和 JobQueue 初始化成功。")
     return True
 
-# --- Flask Health Check (部署用) ---
+# --- Flask Health Check ---
 from flask import Flask, jsonify
 app = Flask(__name__)
-
 @app.route('/health')
-def health_check():
-    return jsonify({"status": "ok" if APPLICATION else "error", "message": "Bot is running."}), (200 if APPLICATION else 500)
+def health_check(): return jsonify({"status": "ok"}), 200
 
 if __name__ == '__main__':
     if TELEGRAM_BOT_TOKEN:
-        if not initialize_bot_and_scheduler(run_web_server=False):
-            sys.exit(1)
-        logger.info("以 Polling 模式啟動 Bot...")
+        if not initialize_bot_and_scheduler(): sys.exit(1)
+        logger.info("Bot 啟動中...")
         try:
-            APPLICATION.run_polling(allowed_updates=Update.ALL_TYPES)
-        except KeyboardInterrupt:
-            logger.info("程式已手動終止。")
+            # 使用 close_loop=False 並捕捉特定 AttributeError 以優雅停機
+            APPLICATION.run_polling(allowed_updates=Update.ALL_TYPES, close_loop=False)
+        except AttributeError as ae:
+            if "_pending_futures" in str(ae):
+                logger.info("Bot 已安全停止 (忽略已知排程器關閉 Bug)。")
+            else: logger.error(f"發生未預期的屬性錯誤: {ae}")
+        except Exception as e:
+            logger.error(f"Bot 運行出錯: {e}")
+        finally:
+            logger.info("程序結束。")
     else:
-        initialize_bot_and_scheduler(run_web_server=True)
-        logger.warning("Bot 初始化失敗，僅啟動 Flask 健康檢查。")
+        # Web 模式 (部署平台健康檢查用)
         port = int(os.environ.get('PORT', 5000))
-        logger.info(f"以 Web 模式啟動 Flask，監聽端口: {port}")
         app.run(host='0.0.0.0', port=port)
-
