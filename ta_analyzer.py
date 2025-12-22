@@ -1,5 +1,3 @@
-# ta_analyzer.py (整合 A 欄超連結功能版)
-
 import os
 import time
 import random
@@ -13,18 +11,16 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # 導入必要的函式庫
 import yfinance as yf
 from numba import njit 
-import ta_helpers  # 導入您的輔助模組
+import ta_helpers  # 確保您有此輔助模組
 
 logger = logging.getLogger(__name__)
 
-# === 純 Python / NumPy / Pandas 指標實作 ===
+# === 指標實作 (保持不變) ===
 
 def sma(arr, period):
-    """計算簡單移動平均線 (Simple Moving Average)。"""
     return pd.Series(arr).rolling(period).mean().values
 
 def macd(close, fast=12, slow=26, signal=9):
-    """計算 MACD 指標。"""
     close = pd.Series(close)
     ema_fast = close.ewm(span=fast, adjust=False).mean()
     ema_slow = close.ewm(span=slow, adjust=False).mean()
@@ -35,7 +31,6 @@ def macd(close, fast=12, slow=26, signal=9):
 
 @njit
 def stoch(high, low, close, k_period=9):
-    """計算 KD 中的 FastK。"""
     n = len(close)
     k = np.full(n, np.nan)
     for i in range(k_period - 1, n):
@@ -54,7 +49,6 @@ MIN_SLEEP_SEC = 0.5
 MAX_SLEEP_SEC = 1.5
 MAX_WORKERS = 5
 
-# 欄位映射表
 COLUMN_MAP = {
     'latest_close': 'D', 'BIAS_Val': 'E', 'LOW_DAYS': 'F', 'HIGH_DAYS': 'G',
     'MA_TANGLE': 'H', 'SLOPE_DESC': 'I', 'KD_Signal': 'J', 'KD_SWITCH': 'K',
@@ -76,7 +70,6 @@ def excel_col_to_index(col_letter: str) -> int:
     return index - 1
 
 def download_one_stock(ticker: str, cache_dir: str = CACHE_DIR) -> tuple:
-    cache_file = os.path.join(cache_dir, f"{ticker}_history.csv")
     end_date = datetime.now().strftime('%Y-%m-%d')
     start_date = (datetime.now() - timedelta(days=90)).strftime('%Y-%m-%d')
     last_err = None
@@ -99,9 +92,22 @@ def analyze_and_update_sheets(gc: gspread.Client, spreadsheet_name: str, stock_c
         spreadsheet = gc.open(spreadsheet_name)
         worksheet = spreadsheet.worksheet("工作表1")
         all_values = worksheet.get_all_values()
-        code_to_row = {row[0].split('"')[3] if '=HYPERLINK' in row[0] else row[0]: i + 2 
-                       for i, row in enumerate(all_values[1:]) if row and row[0]}
         
+        # --- 修正後的 A 欄代號提取邏輯 ---
+        code_to_row = {}
+        for i, row in enumerate(all_values[1:]): # 跳過標題列
+            if row and row[0]:
+                raw_a = row[0]
+                if '=HYPERLINK' in raw_a.upper():
+                    try:
+                        # 格式通常為 =HYPERLINK("url", "code")，取最後一個引號組
+                        actual_code = raw_a.split('"')[-2]
+                        code_to_row[actual_code] = i + 2
+                    except:
+                        code_to_row[raw_a] = i + 2
+                else:
+                    code_to_row[raw_a] = i + 2
+
         # 多執行緒下載
         downloaded_data = {}
         successful_tickers = []
@@ -121,25 +127,34 @@ def analyze_and_update_sheets(gc: gspread.Client, spreadsheet_name: str, stock_c
             row_num = code_to_row.get(code)
             if not row_num: continue
             
+            # 取得該列舊資料以比對訊號
             current_sheet_row = all_values[row_num - 1]
             row_data_old = {k: current_sheet_row[excel_col_to_index(v)].strip().upper() 
                             for k, v in COLUMN_MAP.items() if excel_col_to_index(v) < len(current_sheet_row)}
             
-            original_row = stock_df[stock_df['代號'] == code].iloc[0]
-            link = original_row.get('連結', '')
-
-            # --- 🚀 關鍵新增：更新 A 欄超連結 ---
-            if link:
-                hyperlink_formula = f'=HYPERLINK("{link}", "{code}")'
-                update_cells.append((('A', row_num), hyperlink_formula))
+            # 獲取正確的連結
+            row_info = stock_df[stock_df['代號'] == code]
+            if not row_info.empty:
+                link = row_info.iloc[0].get('連結', '')
+                # --- 🚀 關鍵修正：確保寫入乾淨的單一超連結公式 ---
+                if link:
+                    hyperlink_formula = f'=HYPERLINK("{link}", "{code}")'
+                    update_cells.append((('A', row_num), hyperlink_formula))
 
             # 指標計算
             close_vals = data['Close'].values
-            k_fast = stoch(data['High'].values, data['Low'].values, close_vals)
-            slowk = sma(k_fast[~np.isnan(k_fast)], 3)
-            slowd = sma(slowk[~np.isnan(slowk)], 3)
+            high_vals = data['High'].values
+            low_vals = data['Low'].values
+            
+            k_fast = stoch(high_vals, low_vals, close_vals)
+            k_clean = k_fast[~np.isnan(k_fast)]
+            slowk = sma(k_clean, 3)
+            slowd = sma(slowk, 3)
+            
             macd_l, sig_l, _ = macd(close_vals)
-            ma5, ma10, ma20 = sma(close_vals, 5), sma(close_vals, 10), sma(close_vals, 20)
+            ma5 = sma(close_vals, 5)
+            ma10 = sma(close_vals, 10)
+            ma20 = sma(close_vals, 20)
             
             # 訊號判斷
             kd_sig, is_kd = ta_helpers.check_cross_signal(slowk[-1], slowd[-1], slowk[-2], slowd[-2], "KD")
@@ -148,16 +163,18 @@ def analyze_and_update_sheets(gc: gspread.Client, spreadsheet_name: str, stock_c
             # 乖離率與斜率
             latest_c = close_vals[-1]
             bias = ((latest_c - ma10[-1]) / ma10[-1]) * 100 if ma10[-1] else 0
-            s5, s10, s20 = ta_helpers.calculate_slope(ma5), ta_helpers.calculate_slope(ma10), ta_helpers.calculate_slope(ma20)
+            s5 = ta_helpers.calculate_slope(ma5)
+            s10 = ta_helpers.calculate_slope(ma10)
+            s20 = ta_helpers.calculate_slope(ma20)
             
-            # 呼叫單一訊號處理 (去重/發送 Telegram)
             alert_msg_summary = []
+            # 處理訊號與發送通知
             for s_name, is_a, s_txt in [('KD', is_kd, kd_sig), ('MACD', is_macd, macd_sig)]:
-                ta_helpers.process_single_signal(s_name, is_a, s_txt, code, row_data_old, COLUMN_MAP, current_date, alerts, alert_msg_summary, update_cells, row_num, link)
+                ta_helpers.process_single_signal(s_name, is_a, s_txt, code, row_data_old, COLUMN_MAP, current_date, alerts, alert_msg_summary, update_cells, row_num, link if 'link' in locals() else "")
 
-            # 批次準備寫入數據
-            update_cells.append(((COLUMN_MAP['latest_close'], row_num), f"{latest_c:.2f}"))
-            update_cells.append(((COLUMN_MAP['MA5_SLOPE'], row_num), f"{s5:.4f}"))
+            # 填充更新清單
+            update_cells.append(((COLUMN_MAP['latest_close'], row_num), round(float(latest_c), 2)))
+            update_cells.append(((COLUMN_MAP['MA5_SLOPE'], row_num), round(float(s5), 4)))
             update_cells.append(((COLUMN_MAP['MA_TANGLE'], row_num), ta_helpers.check_ma_tangle(ma5, ma10, ma20)))
             
             if alert_msg_summary:
@@ -168,11 +185,11 @@ def analyze_and_update_sheets(gc: gspread.Client, spreadsheet_name: str, stock_c
         if update_cells:
             batch = [{'range': f"{c}{r}", 'values': [[v]]} for (c, r), v in update_cells]
             worksheet.batch_update(batch)
-            logger.info(f"✅ 已完成 {len(successful_tickers)} 檔股票分析並更新 A 欄超連結。")
+            logger.info(f"✅ 已完成 {len(successful_tickers)} 檔分析。A 欄超連結已優化。")
             
     except Exception as e:
-        logger.error(f"分析流程錯誤: {e}")
+        logger.error(f"分析流程錯誤: {e}", exc_info=True)
     return alerts
 
 if __name__ == '__main__':
-    print("請通過 bot.py 運行。")
+    print("請通過 bot.py 運行此分析程式。")
