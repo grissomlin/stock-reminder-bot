@@ -22,46 +22,47 @@ from telegram.ext import (
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# --- 2. 環境變數診斷器 (啟動時自動執行) ---
+# --- 2. 環境變數全清單診斷器 ---
 def diagnose_env():
-    print("\n" + "🚀" + "="*40)
-    print("🔍 [Railway 環境變數診斷啟動]")
+    print("\n" + "🚀" + "="*50)
+    print("🔍 [Railway 全環境變數清單掃描]")
     
-    # 診斷 TELEGRAM_BOT_TOKEN
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    if token:
-        print(f"✅ BOT_TOKEN: 已偵測 (長度: {len(token)}) -> {token[:5]}***{token[-5:]}")
-    else:
-        print("❌ BOT_TOKEN: 缺失！(請確認 Railway 變數名稱是否正確)")
-
-    # 診斷 TELEGRAM_CHAT_ID
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
-    if chat_id:
-        clean_id = chat_id.strip().replace('"', '').replace("'", "")
-        print(f"✅ CHAT_ID: 已偵測 -> [{clean_id}]")
-        try:
-            int(clean_id)
-            print("   -> 格式檢查: 成功 (有效整數)")
-        except:
-            print("   -> ⚠️ 格式檢查: 失敗 (包含非數字字元，請檢查有無空格)")
-    else:
-        print("❌ CHAT_ID: 缺失！(這會導致排程無法發送訊息)")
-
-    # 診斷 GOOGLE_CREDENTIALS
-    g_creds = os.environ.get("GOOGLE_CREDENTIALS")
-    if g_creds:
-        print(f"✅ GOOGLE_CREDENTIALS: 已偵測 (長度: {len(g_creds)})")
-        try:
-            json.loads(g_creds)
-            print("   -> 格式檢查: 成功 (有效 JSON)")
-        except Exception as e:
-            print(f"   -> ⚠️ 格式檢查: 失敗 (JSON 解析錯誤: {str(e)[:50]})")
-    else:
-        print("❌ GOOGLE_CREDENTIALS: 缺失！")
+    # 定義需要遮蔽的敏感關鍵字
+    sensitive_keywords = ['TOKEN', 'KEY', 'CREDENTIALS', 'PASSWORD', 'SECRET', 'AUTH', 'PWD']
     
-    print("🚀" + "="*40 + "\n")
+    # 取得並排序所有環境變數名稱
+    env_keys = sorted(os.environ.keys())
+    
+    for key in env_keys:
+        value = os.environ.get(key)
+        
+        # 檢查是否為敏感資訊
+        is_sensitive = any(keyword in key.upper() for keyword in sensitive_keywords)
+        
+        if is_sensitive:
+            # 敏感資訊：只顯示頭尾與長度
+            if value and len(value) > 8:
+                display_value = f"{value[:4]}***{value[-4:]} (長度: {len(value)})"
+            else:
+                display_value = "********"
+        else:
+            # 一般資訊：直接顯示
+            display_value = value
+            
+        print(f"🔹 {key}: {display_value}")
 
-# 立即執行診斷
+    print("\n🎯 [核心變數專項檢查]")
+    # 核心檢查邏輯
+    target_id = os.environ.get("TELEGRAM_CHAT_ID")
+    if target_id:
+        clean_id = target_id.strip().replace('"', '').replace("'", "")
+        print(f"✅ TELEGRAM_CHAT_ID: [{clean_id}] (格式: {'純數字' if clean_id.replace('-','').isdigit() else '非純數字，請檢查！'})")
+    else:
+        print("❌ TELEGRAM_CHAT_ID: 缺失！")
+
+    print("🚀" + "="*50 + "\n")
+
+# 在程式最前端執行診斷
 diagnose_env()
 
 # --- 3. 基礎參數設定 ---
@@ -70,12 +71,13 @@ if current_dir not in sys.path:
     sys.path.insert(0, current_dir)
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-ENV_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 SPREADSHEET_NAME = "雲端提醒"
 TAIPEI_TZ = timezone('Asia/Taipei')
 
-# --- 輔助函式：安全獲取 Chat ID ---
-def safe_get_chat_id(val):
+# --- 輔助函式：安全獲取 Chat ID (支援多種 Key 備援) ---
+def safe_get_chat_id():
+    # 同時嘗試多種可能的名字
+    val = os.environ.get("TELEGRAM_CHAT_ID") or os.environ.get("CHAT_ID")
     if not val: return None
     try:
         return int(str(val).strip().replace('"', '').replace("'", ""))
@@ -83,10 +85,10 @@ def safe_get_chat_id(val):
 
 # 全域變數
 APPLICATION = None
-USER_CHAT_ID = safe_get_chat_id(ENV_CHAT_ID)
+USER_CHAT_ID = safe_get_chat_id()
 ANALYZE_FUNC = None
 
-# --- 4. 核心模組加載 ---
+# --- 4. 核心模組動態加載 ---
 try:
     module_name = "ta_analyzer"
     module_path = os.path.join(current_dir, f"{module_name}.py")
@@ -137,15 +139,14 @@ def fetch_stock_data_for_reminder():
 # --- 6. Telegram 排程任務 ---
 async def periodic_reminder_job(context: ContextTypes.DEFAULT_TYPE):
     global USER_CHAT_ID
-    # 執行時再次檢查 ID
     if not USER_CHAT_ID:
-        USER_CHAT_ID = safe_get_chat_id(os.environ.get("TELEGRAM_CHAT_ID"))
+        USER_CHAT_ID = safe_get_chat_id()
 
     if not USER_CHAT_ID:
         logger.warning("‼️ 找不到目標 Chat ID，取消排程。")
         return
         
-    logger.info(f"⏰ 啟動分析任務 (ID: {USER_CHAT_ID})")
+    logger.info(f"⏰ 啟動分析任務 (目標 ID: {USER_CHAT_ID})")
     stock_df = fetch_stock_data_for_reminder()
     if stock_df.empty: return
 
@@ -166,11 +167,8 @@ async def periodic_reminder_job(context: ContextTypes.DEFAULT_TYPE):
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     global USER_CHAT_ID
     current_id = update.effective_chat.id
-    if not USER_CHAT_ID:
-        USER_CHAT_ID = current_id
-        await update.message.reply_text(f"綁定成功！\n此對話 ID 為: `{current_id}`")
-    else:
-        await update.message.reply_text(f"運行中！目前監聽: `{USER_CHAT_ID}`")
+    USER_CHAT_ID = current_id
+    await update.message.reply_text(f"綁定成功！\n此對話 ID 為: `{current_id}`")
 
 # --- 8. 排程設定 ---
 def setup_scheduling(job_queue: JobQueue):
@@ -192,7 +190,7 @@ def health_check():
 def main():
     global APPLICATION
     if not TELEGRAM_BOT_TOKEN:
-        logger.error("❌ 找不到 TOKEN，切換為 Flask 模式保持運作")
+        logger.error("❌ 找不到 TOKEN，啟動 Flask 模式")
         app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
         return
 
