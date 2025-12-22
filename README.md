@@ -1,15 +1,16 @@
 # stock-reminder-bot
+---
 
+## 📖 延伸閱讀 / Further Reading
 
 本專案的詳細環境設定（Google API 申請、Telegram Bot 建立）與操作流程，請參考我撰寫的圖文教學：
 
-👉 [**我的方格子文章 / My Vocus Articles**](https://vocus.cc/article/6769c27bfd8978000109d943)
+👉 [**我的方格子文章 / My Vocus Articles**](https://vocus.cc/article/6949411ffd89780001244510)
 
 > **教學內容包含：**
 > * 如何取得 Google Cloud 服務帳戶金鑰 (JSON)
 > * 如何建立 Telegram Bot 並獲取 Chat ID
 > * 如何設定試算表與 Python 執行環境
->
 
 A Telegram bot utilizing Python, yfinance, and TA-Lib to perform technical analysis on a Google Sheet list of stock tickers and send timely alerts via the APScheduler. (中文：🤖 一個 Telegram 機器人，用於對 Google Sheets 內的股票代號進行技術分析，並在指標觸發時即時發送警報通知。)
 
