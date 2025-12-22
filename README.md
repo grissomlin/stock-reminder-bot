@@ -62,6 +62,10 @@ Later, as Heroku introduced paid plans and I shifted my focus to backtesting str
 ![googlesheet2](image/oldversion.png)
 
 
+
+操作說明 在如下方格子連結中有教學
+https://vocus.cc/article/6949411ffd89780001244510
+
 ## 📖 延伸閱讀 / Further Reading 👉 [我的方格子文章 / My Vocus Articles](https://vocus.cc/salon/grissomlin/room/693e915f93e86fa746e87698)
 
 📊 六大市場股票統計數據簡介 / Stock Market Statistics Overview
