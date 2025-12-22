@@ -63,8 +63,20 @@ Later, as Heroku introduced paid plans and I shifted my focus to backtesting str
 
 
 
-操作說明 在如下方格子連結中有教學
-https://vocus.cc/article/6949411ffd89780001244510
+---
+
+## 📖 延伸閱讀 / Further Reading
+
+本專案的詳細環境設定（Google API 申請、Telegram Bot 建立）與操作流程，請參考我撰寫的圖文教學：
+
+👉 [**我的方格子文章 / My Vocus Articles**](https://vocus.cc/article/6769c27bfd8978000109d943)
+
+> **教學內容包含：**
+> * 如何取得 Google Cloud 服務帳戶金鑰 (JSON)
+> * 如何建立 Telegram Bot 並獲取 Chat ID
+> * 如何設定試算表與 Python 執行環境
+>
+
 
 ## 📖 延伸閱讀 / Further Reading 👉 [我的方格子文章 / My Vocus Articles](https://vocus.cc/salon/grissomlin/room/693e915f93e86fa746e87698)
 
