@@ -40,10 +40,6 @@ def stoch(high, low, close, k_period=9):
     return k
 
 # === 2. 常數與欄位映射 ===
-MIN_DATA_POINTS = 40
-DOWNLOAD_RETRIES = 2
-MAX_WORKERS = 5
-
 COLUMN_MAP = {
     'latest_close': 'D', 'BIAS_Val': 'E', 'LOW_DAYS': 'F', 'HIGH_DAYS': 'G',
     'MA_TANGLE': 'H', 'SLOPE_DESC': 'I', 'KD_Signal': 'J', 'KD_SWITCH': 'K',
@@ -67,11 +63,11 @@ def download_one_stock(ticker):
     end_date = datetime.now() + timedelta(days=1)
     start_date = end_date - timedelta(days=100)
     
-    # 清理公式，提取純代號 (例如從 HYPERLINK 中提取)
+    # 清理公式，提取純代號
     clean_ticker = ticker.split('"')[-2] if '"' in ticker else ticker
     clean_ticker = clean_ticker.strip()
     
-    for attempt in range(DOWNLOAD_RETRIES):
+    for attempt in range(2):
         try:
             time.sleep(random.uniform(0.6, 1.5))
             t_obj = yf.Ticker(clean_ticker)
@@ -92,7 +88,7 @@ def analyze_and_update_sheets(gc, spreadsheet_name, stock_codes, stock_df):
         ws = sh.worksheet("工作表1")
         all_rows = ws.get_all_values()
 
-        # A. 建立代號與行號映射
+        # A. 建立映射
         code_to_row = {}
         for idx, row in enumerate(all_rows[1:], start=2):
             if not row or not row[0]: continue
@@ -100,9 +96,9 @@ def analyze_and_update_sheets(gc, spreadsheet_name, stock_codes, stock_df):
             actual_code = raw_val.split('"')[-2] if '"' in raw_val else raw_val
             code_to_row[actual_code.strip()] = idx
 
-        # B. 多執行緒下載
+        # B. 下載資料
         successful_data = {}
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        with ThreadPoolExecutor(max_workers=5) as executor:
             futures = {executor.submit(download_one_stock, code): code for code in stock_codes}
             for f in as_completed(futures):
                 ticker, status, data = f.result()
@@ -111,19 +107,16 @@ def analyze_and_update_sheets(gc, spreadsheet_name, stock_codes, stock_df):
 
         # C. 逐一分析
         update_cells = []
-        # 重要修正：傳遞 taipei_now (datetime 物件) 給 ta_helpers，不要轉成字串
         taipei_now = datetime.now(timezone('Asia/Taipei'))
         
         for code, df in successful_data.items():
             row_idx = code_to_row.get(code)
             if not row_idx: continue
 
-            # 提取舊資料比對訊號
             old_row_data = all_rows[row_idx - 1]
             row_map_old = {k: old_row_data[excel_col_to_index(v)].strip().upper() 
                            for k, v in COLUMN_MAP.items() if excel_col_to_index(v) < len(old_row_data)}
 
-            # 指標計算
             c, h, l = df['Close'].values, df['High'].values, df['Low'].values
             k_raw = stoch(h, l, c)
             k_clean = k_raw[~np.isnan(k_raw)]
@@ -132,28 +125,24 @@ def analyze_and_update_sheets(gc, spreadsheet_name, stock_codes, stock_df):
             slowk = sma(k_clean, 3)
             slowd = sma(slowk, 3)
             macd_l, sig_l, _ = macd(c)
-            ma5, ma10, ma20 = sma(c, 5), sma(c, 10), sma(c, 20)
+            ma5 = sma(c, 5)
             
-            # 交叉訊號
             kd_sig, is_kd = ta_helpers.check_cross_signal(slowk[-1], slowd[-1], slowk[-2], slowd[-2], "KD")
             macd_sig, is_macd = ta_helpers.check_cross_signal(macd_l[-1], sig_l[-1], macd_l[-2], sig_l[-2], "MACD")
             
-            # 準備價格更新
-            cur_price = round(float(c[-1]), 2)
-            update_cells.append({'range': f"{COLUMN_MAP['latest_close']}{row_idx}", 'values': [[cur_price]]})
+            # 格式：{'range': 'D10', 'values': [[123.4]]}
+            update_cells.append({'range': f"{COLUMN_MAP['latest_close']}{row_idx}", 'values': [[round(float(c[-1]), 2)]]})
             
-            # 訊息與連結處理
             msg_list = []
             link = stock_df[stock_df['代號'] == code]['連結'].values[0] if code in stock_df['代號'].values else ""
             
-            # 呼叫 ta_helpers (傳入 taipei_now 物件)
             for s_name, is_act, s_txt in [('KD', is_kd, kd_sig), ('MACD', is_macd, macd_sig)]:
+                # 此處呼叫 ta_helpers，它可能會傳入不同的資料格式到 update_cells
                 ta_helpers.process_single_signal(
                     s_name, is_act, s_txt, code, row_map_old, COLUMN_MAP, 
                     taipei_now, alerts, msg_list, update_cells, row_idx, link
                 )
 
-            # 更新斜率
             s5 = ta_helpers.calculate_slope(ma5)
             update_cells.append({'range': f"{COLUMN_MAP['MA5_SLOPE']}{row_idx}", 'values': [[round(float(s5), 4)]]})
             
@@ -161,12 +150,27 @@ def analyze_and_update_sheets(gc, spreadsheet_name, stock_codes, stock_df):
                 update_cells.append({'range': f"{COLUMN_MAP['alert_time']}{row_idx}", 'values': [[taipei_now.strftime('%H:%M:%S')]]})
                 update_cells.append({'range': f"{COLUMN_MAP['Alert_Detail']}{row_idx}", 'values': [[' | '.join(msg_list)]]})
 
-        # D. 批量寫回
+        # D. 核心格式修復：將 update_cells 轉換為 gspread 接受的格式
         if update_cells:
-            ws.batch_update(update_cells)
-            logger.info(f"✅ 成功分析並更新 {len(successful_data)} 檔標的")
+            final_batch = []
+            for item in update_cells:
+                # 如果已經是字典且格式正確
+                if isinstance(item, dict) and 'range' in item:
+                    final_batch.append(item)
+                # 如果是元組 (('D', 10), 123.4) 或 (('D10'), 123.4)
+                elif isinstance(item, tuple) and len(item) == 2:
+                    pos, val = item
+                    if isinstance(pos, tuple): # (('D', 10), 123.4)
+                        cell_range = f"{pos[0]}{pos[1]}"
+                    else: # ('D10', 123.4)
+                        cell_range = str(pos)
+                    final_batch.append({'range': cell_range, 'values': [[val]]})
+            
+            if final_batch:
+                ws.batch_update(final_batch)
+                logger.info(f"✅ 成功批量更新 {len(successful_data)} 檔資料至 Google Sheets")
 
     except Exception as e:
-        logger.error(f"❌ 分析流程重大錯誤: {e}", exc_info=True)
+        logger.error(f"❌ 分析流程發生重大錯誤: {e}", exc_info=True)
     
     return alerts
