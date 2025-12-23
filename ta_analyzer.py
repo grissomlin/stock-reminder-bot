@@ -13,7 +13,7 @@ import ta_helpers  # 確保 ta_helpers.py 在同目錄下
 
 logger = logging.getLogger(__name__)
 
-# === 1. 技術指標計算 (Numba 加速與 Pandas 優化) ===
+# === 1. 技術指標計算 ===
 
 def sma(arr, period):
     if len(arr) < period: return np.full(len(arr), np.nan)
@@ -63,7 +63,7 @@ def download_one_stock(ticker):
     end_date = datetime.now() + timedelta(days=1)
     start_date = end_date - timedelta(days=100)
     
-    # 清理公式，提取純代號
+    # 清理公式，提取純代號 (從可能混亂的 HYPERLINK 字符串中抓取最後一個正確代號)
     clean_ticker = ticker.split('"')[-2] if '"' in ticker else ticker
     clean_ticker = clean_ticker.strip()
     
@@ -88,11 +88,12 @@ def analyze_and_update_sheets(gc, spreadsheet_name, stock_codes, stock_df):
         ws = sh.worksheet("工作表1")
         all_rows = ws.get_all_values()
 
-        # A. 建立映射
+        # A. 建立映射 (代號 -> 行號)
         code_to_row = {}
         for idx, row in enumerate(all_rows[1:], start=2):
             if not row or not row[0]: continue
             raw_val = row[0]
+            # 兼容處理：無論 A 欄多亂，嘗試抓出裡面的代號
             actual_code = raw_val.split('"')[-2] if '"' in raw_val else raw_val
             code_to_row[actual_code.strip()] = idx
 
@@ -130,14 +131,21 @@ def analyze_and_update_sheets(gc, spreadsheet_name, stock_codes, stock_df):
             kd_sig, is_kd = ta_helpers.check_cross_signal(slowk[-1], slowd[-1], slowk[-2], slowd[-2], "KD")
             macd_sig, is_macd = ta_helpers.check_cross_signal(macd_l[-1], sig_l[-1], macd_l[-2], sig_l[-2], "MACD")
             
-            # 格式：{'range': 'D10', 'values': [[123.4]]}
+            # 1. 更新最新價格
             update_cells.append({'range': f"{COLUMN_MAP['latest_close']}{row_idx}", 'values': [[round(float(c[-1]), 2)]]})
             
-            msg_list = []
-            link = stock_df[stock_df['代號'] == code]['連結'].values[0] if code in stock_df['代號'].values else ""
+            # 2. 核心修正：重新校正並覆寫 A 欄超連結 (修復一長串公式的問題)
+            link = ""
+            if code in stock_df['代號'].values:
+                link = stock_df[stock_df['代號'] == code]['連結'].values[0]
             
+            if link:
+                # 確保寫入的是 = 開頭的正確公式，這會直接覆蓋掉舊的亂碼
+                correct_formula = f'=HYPERLINK("{link}", "{code}")'
+                update_cells.append({'range': f"A{row_idx}", 'values': [[correct_formula]]})
+            
+            msg_list = []
             for s_name, is_act, s_txt in [('KD', is_kd, kd_sig), ('MACD', is_macd, macd_sig)]:
-                # 此處呼叫 ta_helpers，它可能會傳入不同的資料格式到 update_cells
                 ta_helpers.process_single_signal(
                     s_name, is_act, s_txt, code, row_map_old, COLUMN_MAP, 
                     taipei_now, alerts, msg_list, update_cells, row_idx, link
@@ -150,25 +158,20 @@ def analyze_and_update_sheets(gc, spreadsheet_name, stock_codes, stock_df):
                 update_cells.append({'range': f"{COLUMN_MAP['alert_time']}{row_idx}", 'values': [[taipei_now.strftime('%H:%M:%S')]]})
                 update_cells.append({'range': f"{COLUMN_MAP['Alert_Detail']}{row_idx}", 'values': [[' | '.join(msg_list)]]})
 
-        # D. 核心格式修復：將 update_cells 轉換為 gspread 接受的格式
+        # D. 核心格式修復與批量寫回
         if update_cells:
             final_batch = []
             for item in update_cells:
-                # 如果已經是字典且格式正確
                 if isinstance(item, dict) and 'range' in item:
                     final_batch.append(item)
-                # 如果是元組 (('D', 10), 123.4) 或 (('D10'), 123.4)
                 elif isinstance(item, tuple) and len(item) == 2:
                     pos, val = item
-                    if isinstance(pos, tuple): # (('D', 10), 123.4)
-                        cell_range = f"{pos[0]}{pos[1]}"
-                    else: # ('D10', 123.4)
-                        cell_range = str(pos)
+                    cell_range = f"{pos[0]}{pos[1]}" if isinstance(pos, tuple) else str(pos)
                     final_batch.append({'range': cell_range, 'values': [[val]]})
             
             if final_batch:
-                ws.batch_update(final_batch)
-                logger.info(f"✅ 成功批量更新 {len(successful_data)} 檔資料至 Google Sheets")
+                ws.batch_update(final_batch, value_input_option='USER_ENTERED')
+                logger.info(f"✅ 成功清理 A 欄並更新 {len(successful_data)} 檔資料")
 
     except Exception as e:
         logger.error(f"❌ 分析流程發生重大錯誤: {e}", exc_info=True)
