@@ -13,7 +13,7 @@ import ta_helpers  # 確保 ta_helpers.py 在同目錄下
 
 logger = logging.getLogger(__name__)
 
-# === 1. 技術指標計算 ===
+# === 1. 技術指標計算 (Numba 加速) ===
 
 def sma(arr, period):
     if len(arr) < period: return np.full(len(arr), np.nan)
@@ -39,7 +39,7 @@ def stoch(high, low, close, k_period=9):
             k[i] = 100 * (close[i] - ll) / (hh - ll)
     return k
 
-# === 2. 常數與欄位映射 ===
+# === 2. 欄位映射 ===
 COLUMN_MAP = {
     'latest_close': 'D', 'BIAS_Val': 'E', 'LOW_DAYS': 'F', 'HIGH_DAYS': 'G',
     'MA_TANGLE': 'H', 'SLOPE_DESC': 'I', 'KD_Signal': 'J', 'KD_SWITCH': 'K',
@@ -58,12 +58,12 @@ def excel_col_to_index(col_letter):
         index += (ord(letter) - ord('A') + 1) * (26 ** i)
     return index - 1
 
-# --- 3. 單一股票下載器 ---
+# --- 3. 單一股票下載器 (清理公式邏輯) ---
 def download_one_stock(ticker):
     end_date = datetime.now() + timedelta(days=1)
     start_date = end_date - timedelta(days=100)
     
-    # 清理公式，提取純代號 (從可能混亂的 HYPERLINK 字符串中抓取最後一個正確代號)
+    # 核心：從混亂的公式中提取最後一個正確的代號
     clean_ticker = ticker.split('"')[-2] if '"' in ticker else ticker
     clean_ticker = clean_ticker.strip()
     
@@ -88,16 +88,15 @@ def analyze_and_update_sheets(gc, spreadsheet_name, stock_codes, stock_df):
         ws = sh.worksheet("工作表1")
         all_rows = ws.get_all_values()
 
-        # A. 建立映射 (代號 -> 行號)
+        # A. 建立代號映射
         code_to_row = {}
         for idx, row in enumerate(all_rows[1:], start=2):
             if not row or not row[0]: continue
             raw_val = row[0]
-            # 兼容處理：無論 A 欄多亂，嘗試抓出裡面的代號
             actual_code = raw_val.split('"')[-2] if '"' in raw_val else raw_val
             code_to_row[actual_code.strip()] = idx
 
-        # B. 下載資料
+        # B. 多執行緒下載
         successful_data = {}
         with ThreadPoolExecutor(max_workers=5) as executor:
             futures = {executor.submit(download_one_stock, code): code for code in stock_codes}
@@ -134,13 +133,13 @@ def analyze_and_update_sheets(gc, spreadsheet_name, stock_codes, stock_df):
             # 1. 更新最新價格
             update_cells.append({'range': f"{COLUMN_MAP['latest_close']}{row_idx}", 'values': [[round(float(c[-1]), 2)]]})
             
-            # 2. 核心修正：重新校正並覆寫 A 欄超連結 (修復一長串公式的問題)
+            # 2. 核心修正：強制覆寫 A 欄公式，並確保語法正確 (移除單引號問題)
             link = ""
             if code in stock_df['代號'].values:
                 link = stock_df[stock_df['代號'] == code]['連結'].values[0]
             
             if link:
-                # 確保寫入的是 = 開頭的正確公式，這會直接覆蓋掉舊的亂碼
+                # 這裡的字串必須是直接以 = 開頭
                 correct_formula = f'=HYPERLINK("{link}", "{code}")'
                 update_cells.append({'range': f"A{row_idx}", 'values': [[correct_formula]]})
             
@@ -158,7 +157,7 @@ def analyze_and_update_sheets(gc, spreadsheet_name, stock_codes, stock_df):
                 update_cells.append({'range': f"{COLUMN_MAP['alert_time']}{row_idx}", 'values': [[taipei_now.strftime('%H:%M:%S')]]})
                 update_cells.append({'range': f"{COLUMN_MAP['Alert_Detail']}{row_idx}", 'values': [[' | '.join(msg_list)]]})
 
-        # D. 核心格式修復與批量寫回
+        # D. 最終批量寫回 (核心模式設定)
         if update_cells:
             final_batch = []
             for item in update_cells:
@@ -170,8 +169,10 @@ def analyze_and_update_sheets(gc, spreadsheet_name, stock_codes, stock_df):
                     final_batch.append({'range': cell_range, 'values': [[val]]})
             
             if final_batch:
+                # 重點中的重點：value_input_option='USER_ENTERED'
+                # 這樣 Google Sheets 才會解析 = 符號，並移除隱藏的單引號
                 ws.batch_update(final_batch, value_input_option='USER_ENTERED')
-                logger.info(f"✅ 成功清理 A 欄並更新 {len(successful_data)} 檔資料")
+                logger.info(f"✅ 已成功移除單引號並覆寫 A 欄公式，總更新 {len(successful_data)} 筆。")
 
     except Exception as e:
         logger.error(f"❌ 分析流程發生重大錯誤: {e}", exc_info=True)
