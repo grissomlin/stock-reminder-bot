@@ -58,12 +58,11 @@ def excel_col_to_index(col_letter):
         index += (ord(letter) - ord('A') + 1) * (26 ** i)
     return index - 1
 
-# --- 3. 單一股票下載器 (清理公式邏輯) ---
+# --- 3. 單一股票下載器 ---
 def download_one_stock(ticker):
     end_date = datetime.now() + timedelta(days=1)
     start_date = end_date - timedelta(days=100)
     
-    # 核心：從混亂的公式中提取最後一個正確的代號
     clean_ticker = ticker.split('"')[-2] if '"' in ticker else ticker
     clean_ticker = clean_ticker.strip()
     
@@ -83,12 +82,17 @@ def download_one_stock(ticker):
 # --- 4. 主分析函式 ---
 def analyze_and_update_sheets(gc, spreadsheet_name, stock_codes, stock_df):
     alerts = []
+    # --- 新增：建立代號與名稱的對照字典 ---
+    # 這裡假設 stock_df 裡面已經有 '名稱' 欄位（bot.py 抓回來的）
+    name_map = {}
+    if '代號' in stock_df.columns and '名稱' in stock_df.columns:
+        name_map = dict(zip(stock_df['代號'], stock_df['名稱']))
+
     try:
         sh = gc.open(spreadsheet_name)
         ws = sh.worksheet("工作表1")
         all_rows = ws.get_all_values()
 
-        # A. 建立代號映射
         code_to_row = {}
         for idx, row in enumerate(all_rows[1:], start=2):
             if not row or not row[0]: continue
@@ -96,7 +100,6 @@ def analyze_and_update_sheets(gc, spreadsheet_name, stock_codes, stock_df):
             actual_code = raw_val.split('"')[-2] if '"' in raw_val else raw_val
             code_to_row[actual_code.strip()] = idx
 
-        # B. 多執行緒下載
         successful_data = {}
         with ThreadPoolExecutor(max_workers=5) as executor:
             futures = {executor.submit(download_one_stock, code): code for code in stock_codes}
@@ -105,7 +108,6 @@ def analyze_and_update_sheets(gc, spreadsheet_name, stock_codes, stock_df):
                 if status == "ok":
                     successful_data[ticker] = data
 
-        # C. 逐一分析
         update_cells = []
         taipei_now = datetime.now(timezone('Asia/Taipei'))
         
@@ -130,25 +132,32 @@ def analyze_and_update_sheets(gc, spreadsheet_name, stock_codes, stock_df):
             kd_sig, is_kd = ta_helpers.check_cross_signal(slowk[-1], slowd[-1], slowk[-2], slowd[-2], "KD")
             macd_sig, is_macd = ta_helpers.check_cross_signal(macd_l[-1], sig_l[-1], macd_l[-2], sig_l[-2], "MACD")
             
-            # 1. 更新最新價格
             update_cells.append({'range': f"{COLUMN_MAP['latest_close']}{row_idx}", 'values': [[round(float(c[-1]), 2)]]})
             
-            # 2. 核心修正：強制覆寫 A 欄公式，並確保語法正確 (移除單引號問題)
             link = ""
             if code in stock_df['代號'].values:
                 link = stock_df[stock_df['代號'] == code]['連結'].values[0]
             
             if link:
-                # 這裡的字串必須是直接以 = 開頭
                 correct_formula = f'=HYPERLINK("{link}", "{code}")'
                 update_cells.append({'range': f"A{row_idx}", 'values': [[correct_formula]]})
             
+            # --- 修改處：在產生警報訊息前，先將名稱與代號組合 ---
+            current_stock_name = name_map.get(code, "")
+            display_name = f"{code} {current_stock_name}".strip()
+            
             msg_list = []
+            temp_alerts = [] # 用來暫存這次循環產生的警報
+            
             for s_name, is_act, s_txt in [('KD', is_kd, kd_sig), ('MACD', is_macd, macd_sig)]:
+                # 注意：這裡傳入的 code 改為 display_name
                 ta_helpers.process_single_signal(
-                    s_name, is_act, s_txt, code, row_map_old, COLUMN_MAP, 
-                    taipei_now, alerts, msg_list, update_cells, row_idx, link
+                    s_name, is_act, s_txt, display_name, row_map_old, COLUMN_MAP, 
+                    taipei_now, temp_alerts, msg_list, update_cells, row_idx, link
                 )
+            
+            # 將處理完帶有名稱的訊息加入最終列表
+            alerts.extend(temp_alerts)
 
             s5 = ta_helpers.calculate_slope(ma5)
             update_cells.append({'range': f"{COLUMN_MAP['MA5_SLOPE']}{row_idx}", 'values': [[round(float(s5), 4)]]})
@@ -157,7 +166,6 @@ def analyze_and_update_sheets(gc, spreadsheet_name, stock_codes, stock_df):
                 update_cells.append({'range': f"{COLUMN_MAP['alert_time']}{row_idx}", 'values': [[taipei_now.strftime('%H:%M:%S')]]})
                 update_cells.append({'range': f"{COLUMN_MAP['Alert_Detail']}{row_idx}", 'values': [[' | '.join(msg_list)]]})
 
-        # D. 最終批量寫回 (核心模式設定)
         if update_cells:
             final_batch = []
             for item in update_cells:
@@ -169,10 +177,8 @@ def analyze_and_update_sheets(gc, spreadsheet_name, stock_codes, stock_df):
                     final_batch.append({'range': cell_range, 'values': [[val]]})
             
             if final_batch:
-                # 重點中的重點：value_input_option='USER_ENTERED'
-                # 這樣 Google Sheets 才會解析 = 符號，並移除隱藏的單引號
                 ws.batch_update(final_batch, value_input_option='USER_ENTERED')
-                logger.info(f"✅ 已成功移除單引號並覆寫 A 欄公式，總更新 {len(successful_data)} 筆。")
+                logger.info(f"✅ 更新完成，總處理 {len(successful_data)} 筆。")
 
     except Exception as e:
         logger.error(f"❌ 分析流程發生重大錯誤: {e}", exc_info=True)
