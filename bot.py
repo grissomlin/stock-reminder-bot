@@ -26,7 +26,7 @@ if current_dir not in sys.path:
     sys.path.insert(0, current_dir)
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-# 獲取並清理 Chat ID
+
 def safe_get_chat_id():
     val = os.environ.get("TELEGRAM_CHAT_ID")
     if not val: return None
@@ -58,7 +58,7 @@ try:
 except Exception as e:
     logger.error(f"❌ 模組載入失敗: {e}")
 
-# --- 4. Google Sheets 與資料處理 ---
+# --- 4. 資料處理函式 ---
 def get_google_sheets_client():
     creds_json = os.environ.get("GOOGLE_CREDENTIALS")
     if not creds_json: return None
@@ -86,41 +86,57 @@ def fetch_stock_data_for_reminder():
         logger.error(f"讀取試算表失敗: {e}")
         return pd.DataFrame()
 
-# --- 5. Telegram 排程任務 ---
-async def periodic_reminder_job(context: ContextTypes.DEFAULT_TYPE):
+# --- 5. 核心執行任務 (排程與手動通用) ---
+async def run_analysis_and_send(bot):
     target_id = safe_get_chat_id()
     if not target_id:
-        logger.warning("‼️ 找不到 TELEGRAM_CHAT_ID，任務取消。")
-        return
+        logger.warning("‼️ 找不到 TELEGRAM_CHAT_ID，取消任務。")
+        return False
         
     logger.info(f"⏰ 啟動分析任務 (目標 ID: {target_id})")
     stock_df = fetch_stock_data_for_reminder()
-    if stock_df.empty: return
+    if stock_df.empty: return False
 
     gc = get_google_sheets_client()
     if ANALYZE_FUNC:
         alerts = ANALYZE_FUNC(gc, SPREADSHEET_NAME, stock_df['代號'].tolist(), stock_df)
         if alerts:
             header = f"🔔 *技術指標警報 ({datetime.now(TAIPEI_TZ).strftime('%H:%M:%S')})*"
-            await context.bot.send_message(chat_id=target_id, text=header, parse_mode='Markdown')
+            await bot.send_message(chat_id=target_id, text=header, parse_mode='Markdown')
             for msg in alerts:
                 try:
-                    await context.bot.send_message(chat_id=target_id, text=msg, parse_mode='Markdown', disable_web_page_preview=True)
+                    await bot.send_message(chat_id=target_id, text=msg, parse_mode='Markdown', disable_web_page_preview=True)
                     await asyncio.sleep(0.5)
                 except Exception as e:
                     logger.error(f"發送失敗: {e}")
+        return True
+    return False
 
-# --- 6. 指令處理 ---
+# --- 6. Telegram 任務接口 ---
+async def periodic_reminder_job(context: ContextTypes.DEFAULT_TYPE):
+    await run_analysis_and_send(context.bot)
+
+async def run_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text("🚀 收到指令，開始即時分析...")
+    success = await run_analysis_and_send(context.bot)
+    if not success:
+        await update.message.reply_text("❌ 分析失敗，請檢查 Log 或設定。")
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     current_id = update.effective_chat.id
-    await update.message.reply_text(f"👋 綁定成功！\n您的 Chat ID: `{current_id}`\n系統已就緒，將按排程發送通知。")
+    await update.message.reply_text(f"👋 綁定成功！\n您的 Chat ID: `{current_id}`\n排程包含：亞盤、13:40 收盤前、全球盤、美股收盤。")
 
 # --- 7. 排程設定 ---
 def setup_scheduling(job_queue: JobQueue):
     # 亞洲盤 (週一至五 08:00-13:00 每 30 分鐘)
     job_queue.run_custom(periodic_reminder_job, job_kwargs={'trigger': 'cron', 'minute': '0,30', 'hour': '8-13', 'day_of_week': 'mon-fri', 'timezone': TAIPEI_TZ}, name='Asia')
+    
+    # ✨ 新增：亞洲盤收盤前 (週一至五 13:40)
+    job_queue.run_custom(periodic_reminder_job, job_kwargs={'trigger': 'cron', 'minute': '40', 'hour': '13', 'day_of_week': 'mon-fri', 'timezone': TAIPEI_TZ}, name='Asia_Closing')
+    
     # 全球盤 (週一至五 17:00, 23:00)
     job_queue.run_custom(periodic_reminder_job, job_kwargs={'trigger': 'cron', 'minute': '0', 'hour': '17,23', 'day_of_week': 'mon-fri', 'timezone': TAIPEI_TZ}, name='Global')
+    
     # 美股收盤 (週六 05:00)
     job_queue.run_custom(periodic_reminder_job, job_kwargs={'trigger': 'cron', 'minute': '0', 'hour': '5', 'day_of_week': 'sat', 'timezone': TAIPEI_TZ}, name='US_Close')
 
@@ -144,7 +160,6 @@ def run_flask():
 
 # --- 9. 主程式入口 ---
 def main():
-    # 在後台啟動 Flask (解決 Railway HTTP 檢查)
     threading.Thread(target=run_flask, daemon=True).start()
 
     if not TELEGRAM_BOT_TOKEN:
@@ -159,7 +174,10 @@ def main():
             
             application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
             setup_scheduling(application.job_queue)
+            
+            # 指令註冊
             application.add_handler(CommandHandler("start", start_command))
+            application.add_handler(CommandHandler("run", run_command)) # 手動執行指令
             
             logger.info("📢 Bot 已成功連線並運行中")
             application.run_polling(allowed_updates=Update.ALL_TYPES, close_loop=False)
