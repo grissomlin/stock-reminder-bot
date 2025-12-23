@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-import os, sys, time, random, json, subprocess, logging, asyncio
+import os, sys, time, random, json, subprocess, logging, asyncio, difflib
 import importlib.util
 from datetime import datetime
 from pytz import timezone
@@ -22,47 +22,39 @@ from telegram.ext import (
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# --- 2. 環境變數全清單診斷器 ---
+# --- 2. 環境變數全清單診斷器 (強化版) ---
 def diagnose_env():
     print("\n" + "🚀" + "="*50)
-    print("🔍 [Railway 全環境變數清單掃描]")
+    print("🔍 [Railway 環境變數深度偵錯]")
     
-    # 定義需要遮蔽的敏感關鍵字
+    all_keys = list(os.environ.keys())
+    target_key = "TELEGRAM_CHAT_ID"
     sensitive_keywords = ['TOKEN', 'KEY', 'CREDENTIALS', 'PASSWORD', 'SECRET', 'AUTH', 'PWD']
     
-    # 取得並排序所有環境變數名稱
-    env_keys = sorted(os.environ.keys())
-    
-    for key in env_keys:
-        value = os.environ.get(key)
-        
-        # 檢查是否為敏感資訊
-        is_sensitive = any(keyword in key.upper() for keyword in sensitive_keywords)
-        
-        if is_sensitive:
-            # 敏感資訊：只顯示頭尾與長度
-            if value and len(value) > 8:
-                display_value = f"{value[:4]}***{value[-4:]} (長度: {len(value)})"
-            else:
-                display_value = "********"
-        else:
-            # 一般資訊：直接顯示
-            display_value = value
-            
-        print(f"🔹 {key}: {display_value}")
-
-    print("\n🎯 [核心變數專項檢查]")
-    # 核心檢查邏輯
-    target_id = os.environ.get("TELEGRAM_CHAT_ID")
-    if target_id:
-        clean_id = target_id.strip().replace('"', '').replace("'", "")
-        print(f"✅ TELEGRAM_CHAT_ID: [{clean_id}] (格式: {'純數字' if clean_id.replace('-','').isdigit() else '非純數字，請檢查！'})")
+    # 檢查目標變數
+    val = os.environ.get(target_key)
+    if val:
+        clean_id = str(val).strip().replace('"', '').replace("'", "")
+        print(f"✅ 找到精確匹配: {target_key} = [{clean_id}]")
     else:
-        print("❌ TELEGRAM_CHAT_ID: 缺失！")
+        print(f"❌ 找不到精確名稱: '{target_key}'")
+        # 尋找相似名稱（防止打錯或多空格）
+        matches = difflib.get_close_matches(target_key, all_keys, n=3, cutoff=0.6)
+        space_variants = [k for k in all_keys if target_key in k.strip()]
+        potential_keys = list(set(matches + space_variants))
+        
+        if potential_keys:
+            print(f"💡 發現疑似變數: {potential_keys} (請檢查名稱是否有空格或拼錯)")
 
+    print("\n📋 完整環境變數清單 (已遮蔽敏感資訊):")
+    for key in sorted(all_keys):
+        is_sensitive = any(kw in key.upper() for kw in sensitive_keywords)
+        v = os.environ.get(key)
+        display_v = f"{v[:4]}***{v[-4:]}" if is_sensitive and v and len(v)>8 else v
+        print(f"🔹 {key}: {display_v}")
     print("🚀" + "="*50 + "\n")
 
-# 在程式最前端執行診斷
+# 執行診斷
 diagnose_env()
 
 # --- 3. 基礎參數設定 ---
@@ -74,13 +66,13 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 SPREADSHEET_NAME = "雲端提醒"
 TAIPEI_TZ = timezone('Asia/Taipei')
 
-# --- 輔助函式：安全獲取 Chat ID (支援多種 Key 備援) ---
 def safe_get_chat_id():
-    # 同時嘗試多種可能的名字
     val = os.environ.get("TELEGRAM_CHAT_ID") or os.environ.get("CHAT_ID")
     if not val: return None
     try:
-        return int(str(val).strip().replace('"', '').replace("'", ""))
+        # 移除可能的引號與空格，並轉為數字
+        clean_val = "".join(c for c in str(val).strip() if c.isdigit() or c == '-')
+        return int(clean_val)
     except: return None
 
 # 全域變數
@@ -90,19 +82,13 @@ ANALYZE_FUNC = None
 
 # --- 4. 核心模組動態加載 ---
 try:
-    module_name = "ta_analyzer"
-    module_path = os.path.join(current_dir, f"{module_name}.py")
-    spec = importlib.util.spec_from_file_location(module_name, module_path)
-    ta_module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(ta_module)
-    ANALYZE_FUNC = ta_module.analyze_and_update_sheets
-    
-    module_name_h = "ta_helpers"
-    module_path_h = os.path.join(current_dir, f"{module_name_h}.py")
-    spec_h = importlib.util.spec_from_file_location(module_name_h, module_path_h)
-    ta_h = importlib.util.module_from_spec(spec_h)
-    spec_h.loader.exec_module(ta_h)
-    ta_helpers = ta_h
+    for m in ["ta_analyzer", "ta_helpers"]:
+        path = os.path.join(current_dir, f"{m}.py")
+        spec = importlib.util.spec_from_file_location(m, path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        if m == "ta_analyzer": ANALYZE_FUNC = mod.analyze_and_update_sheets
+        else: ta_helpers = mod
     logger.info("✅ 核心分析模組加載成功")
 except Exception as e:
     logger.error(f"❌ 模組載入失敗: {e}")
@@ -111,11 +97,10 @@ except Exception as e:
 # --- 5. Google Sheets 邏輯 ---
 def get_google_sheets_client():
     creds_json = os.environ.get("GOOGLE_CREDENTIALS")
-    if creds_json:
-        try:
-            return gspread.service_account_from_dict(json.loads(creds_json))
-        except: return None
-    return None
+    if not creds_json: return None
+    try:
+        return gspread.service_account_from_dict(json.loads(creds_json))
+    except: return None
 
 def fetch_stock_data_for_reminder():
     try:
@@ -126,8 +111,8 @@ def fetch_stock_data_for_reminder():
         data = worksheet.get_all_values()
         if len(data) < 2: return pd.DataFrame()
         df = pd.DataFrame(data[1:], columns=data[0])
-        df = df[df['代號'].str.strip().astype(bool)].copy()
         df['代號'] = df['代號'].str.strip()
+        df = df[df['代號'].astype(bool)].copy()
         provider_col = '提供者'
         if provider_col not in df.columns: df[provider_col] = ''
         df['連結'] = df.apply(lambda row: ta_helpers.get_static_link(row['代號'], row[provider_col]), axis=1)
@@ -138,15 +123,13 @@ def fetch_stock_data_for_reminder():
 
 # --- 6. Telegram 排程任務 ---
 async def periodic_reminder_job(context: ContextTypes.DEFAULT_TYPE):
-    global USER_CHAT_ID
-    if not USER_CHAT_ID:
-        USER_CHAT_ID = safe_get_chat_id()
-
-    if not USER_CHAT_ID:
-        logger.warning("‼️ 找不到目標 Chat ID，取消排程。")
+    # 執行時重新獲取 ID 確保最新
+    target_id = safe_get_chat_id()
+    if not target_id:
+        logger.warning("‼️ 找不到目標 Chat ID，取消任務。")
         return
         
-    logger.info(f"⏰ 啟動分析任務 (目標 ID: {USER_CHAT_ID})")
+    logger.info(f"⏰ 啟動分析任務 (目標 ID: {target_id})")
     stock_df = fetch_stock_data_for_reminder()
     if stock_df.empty: return
 
@@ -155,20 +138,18 @@ async def periodic_reminder_job(context: ContextTypes.DEFAULT_TYPE):
     
     if alerts:
         header = f"🔔 *技術指標警報 ({datetime.now(TAIPEI_TZ).strftime('%H:%M:%S')})*"
-        await context.bot.send_message(chat_id=USER_CHAT_ID, text=header, parse_mode='Markdown')
+        await context.bot.send_message(chat_id=target_id, text=header, parse_mode='Markdown')
         for msg in alerts:
             try:
-                await context.bot.send_message(chat_id=USER_CHAT_ID, text=msg, parse_mode='Markdown', disable_web_page_preview=True)
+                await context.bot.send_message(chat_id=target_id, text=msg, parse_mode='Markdown', disable_web_page_preview=True)
                 await asyncio.sleep(0.5)
             except Exception as e:
                 logger.error(f"發送失敗: {e}")
 
 # --- 7. 指令處理 ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    global USER_CHAT_ID
     current_id = update.effective_chat.id
-    USER_CHAT_ID = current_id
-    await update.message.reply_text(f"綁定成功！\n此對話 ID 為: `{current_id}`")
+    await update.message.reply_text(f"綁定成功！\n此對話 ID 為: `{current_id}`\n請確保此 ID 已填入 Railway 的 TELEGRAM_CHAT_ID 變數中。")
 
 # --- 8. 排程設定 ---
 def setup_scheduling(job_queue: JobQueue):
@@ -182,24 +163,37 @@ app = Flask(__name__)
 def health_check():
     return jsonify({
         "status": "ok", 
-        "current_id": USER_CHAT_ID,
-        "env_raw": os.environ.get("TELEGRAM_CHAT_ID")
+        "chat_id_configured": safe_get_chat_id(),
+        "server_time": datetime.now(TAIPEI_TZ).strftime('%Y-%m-%d %H:%M:%S')
     }), 200
 
 # --- 10. 主程式入口 ---
 def main():
-    global APPLICATION
     if not TELEGRAM_BOT_TOKEN:
         logger.error("❌ 找不到 TOKEN，啟動 Flask 模式")
         app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
         return
 
-    APPLICATION = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-    setup_scheduling(APPLICATION.job_queue)
-    APPLICATION.add_handler(CommandHandler("start", start_command))
-
-    logger.info(f"📢 Bot 啟動成功！")
-    APPLICATION.run_polling(allowed_updates=Update.ALL_TYPES)
+    # 循環重試機制：應對 Conflict 衝突
+    while True:
+        try:
+            logger.info("⏳ 正在啟動 Bot (包含 10 秒預防衝突延遲)...")
+            time.sleep(10) # 給予舊實例足夠時間關閉
+            
+            application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+            setup_scheduling(application.job_queue)
+            application.add_handler(CommandHandler("start", start_command))
+            
+            logger.info("📢 Bot 正常運行中")
+            application.run_polling(allowed_updates=Update.ALL_TYPES, close_loop=False)
+            
+        except Exception as e:
+            if "Conflict" in str(e):
+                logger.warning("⚠️ 偵測到連線衝突 (幽靈實例)，20 秒後重新嘗試...")
+                time.sleep(20)
+            else:
+                logger.error(f"💥 發生未知錯誤: {e}")
+                time.sleep(30)
 
 if __name__ == '__main__':
     main()
