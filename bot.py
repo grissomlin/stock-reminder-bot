@@ -74,11 +74,21 @@ def fetch_stock_data_for_reminder():
         worksheet = spreadsheet.worksheet("工作表1")
         data = worksheet.get_all_values()
         if len(data) < 2: return pd.DataFrame()
+        
+        # 建立 DataFrame
         df = pd.DataFrame(data[1:], columns=data[0])
+        
+        # --- 修改處：確保 B 欄（名稱）存在 ---
+        # 假設 B 欄的標題叫做 '名稱'
         df['代號'] = df['代號'].str.strip()
+        if '名稱' not in df.columns:
+            # 如果表格沒標題，強行指定第二欄為名稱（視情況調整）
+            df.rename(columns={df.columns[1]: '名稱'}, inplace=True)
+        
         df = df[df['代號'].astype(bool)].copy()
         provider_col = '提供者'
         if provider_col not in df.columns: df[provider_col] = ''
+        
         if ta_helpers:
             df['連結'] = df.apply(lambda row: ta_helpers.get_static_link(row['代號'], row[provider_col]), axis=1)
         return df
@@ -99,12 +109,17 @@ async def run_analysis_and_send(bot):
 
     gc = get_google_sheets_client()
     if ANALYZE_FUNC:
+        # 注意：這裡將整份 stock_df 傳入 ANALYZE_FUNC
+        # ta_analyzer.py 內部的邏輯會決定最終顯示的文字
         alerts = ANALYZE_FUNC(gc, SPREADSHEET_NAME, stock_df['代號'].tolist(), stock_df)
+        
         if alerts:
             header = f"🔔 *技術指標警報 ({datetime.now(TAIPEI_TZ).strftime('%H:%M:%S')})*"
             await bot.send_message(chat_id=target_id, text=header, parse_mode='Markdown')
             for msg in alerts:
                 try:
+                    # 如果 ta_analyzer 回傳的訊息還沒包含名稱，您可以在這裡進行字串處理（如下例示）
+                    # 假設 msg 開頭是股票代號，我們可以嘗試匹配名稱
                     await bot.send_message(chat_id=target_id, text=msg, parse_mode='Markdown', disable_web_page_preview=True)
                     await asyncio.sleep(0.5)
                 except Exception as e:
@@ -128,16 +143,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 # --- 7. 排程設定 ---
 def setup_scheduling(job_queue: JobQueue):
-    # 亞洲盤 (週一至五 08:00-13:00 每 30 分鐘)
     job_queue.run_custom(periodic_reminder_job, job_kwargs={'trigger': 'cron', 'minute': '0,30', 'hour': '8-13', 'day_of_week': 'mon-fri', 'timezone': TAIPEI_TZ}, name='Asia')
-    
-    # ✨ 新增：亞洲盤收盤前 (週一至五 13:40)
     job_queue.run_custom(periodic_reminder_job, job_kwargs={'trigger': 'cron', 'minute': '40', 'hour': '13', 'day_of_week': 'mon-fri', 'timezone': TAIPEI_TZ}, name='Asia_Closing')
-    
-    # 全球盤 (週一至五 17:00, 23:00)
     job_queue.run_custom(periodic_reminder_job, job_kwargs={'trigger': 'cron', 'minute': '0', 'hour': '17,23', 'day_of_week': 'mon-fri', 'timezone': TAIPEI_TZ}, name='Global')
-    
-    # 美股收盤 (週六 05:00)
     job_queue.run_custom(periodic_reminder_job, job_kwargs={'trigger': 'cron', 'minute': '0', 'hour': '5', 'day_of_week': 'sat', 'timezone': TAIPEI_TZ}, name='US_Close')
 
 # --- 8. Web 服務與 Health Check ---
@@ -171,17 +179,12 @@ def main():
         try:
             logger.info("⏳ 啟動 Telegram Bot (防衝突延遲 10 秒)...")
             time.sleep(10)
-            
             application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
             setup_scheduling(application.job_queue)
-            
-            # 指令註冊
             application.add_handler(CommandHandler("start", start_command))
-            application.add_handler(CommandHandler("run", run_command)) # 手動執行指令
-            
+            application.add_handler(CommandHandler("run", run_command))
             logger.info("📢 Bot 已成功連線並運行中")
             application.run_polling(allowed_updates=Update.ALL_TYPES, close_loop=False)
-            
         except Exception as e:
             if "Conflict" in str(e):
                 logger.warning("⚠️ 偵測到實例衝突，正在重試...")
