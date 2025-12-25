@@ -26,6 +26,8 @@ if current_dir not in sys.path:
     sys.path.insert(0, current_dir)
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+SPREADSHEET_NAME = "雲端提醒"
+TAIPEI_TZ = timezone('Asia/Taipei')
 
 def safe_get_chat_id():
     val = os.environ.get("TELEGRAM_CHAT_ID")
@@ -35,9 +37,6 @@ def safe_get_chat_id():
         return int(clean_val)
     except:
         return None
-
-SPREADSHEET_NAME = "雲端提醒"
-TAIPEI_TZ = timezone('Asia/Taipei')
 
 # 全域變數
 ANALYZE_FUNC = None
@@ -75,14 +74,11 @@ def fetch_stock_data_for_reminder():
         data = worksheet.get_all_values()
         if len(data) < 2: return pd.DataFrame()
         
-        # 建立 DataFrame
         df = pd.DataFrame(data[1:], columns=data[0])
-        
-        # --- 修改處：確保 B 欄（名稱）存在 ---
-        # 假設 B 欄的標題叫做 '名稱'
         df['代號'] = df['代號'].str.strip()
+        
+        # 確保必要的名稱欄位存在
         if '名稱' not in df.columns:
-            # 如果表格沒標題，強行指定第二欄為名稱（視情況調整）
             df.rename(columns={df.columns[1]: '名稱'}, inplace=True)
         
         df = df[df['代號'].astype(bool)].copy()
@@ -96,35 +92,37 @@ def fetch_stock_data_for_reminder():
         logger.error(f"讀取試算表失敗: {e}")
         return pd.DataFrame()
 
-# --- 5. 核心執行任務 (排程與手動通用) ---
+# --- 5. 核心執行任務 ---
 async def run_analysis_and_send(bot):
     target_id = safe_get_chat_id()
     if not target_id:
-        logger.warning("‼️ 找不到 TELEGRAM_CHAT_ID，取消任務。")
+        logger.warning("‼️ 找不到 TELEGRAM_CHAT_ID")
         return False
         
-    logger.info(f"⏰ 啟動分析任務 (目標 ID: {target_id})")
+    now_taipei = datetime.now(TAIPEI_TZ)
+    logger.info(f"⏰ 啟動分析任務: {now_taipei.strftime('%Y-%m-%d %H:%M:%S')}")
+    
     stock_df = fetch_stock_data_for_reminder()
     if stock_df.empty: return False
 
     gc = get_google_sheets_client()
     if ANALYZE_FUNC:
-        # 注意：這裡將整份 stock_df 傳入 ANALYZE_FUNC
-        # ta_analyzer.py 內部的邏輯會決定最終顯示的文字
+        # 呼叫分析函數。注意：去重的邏輯通常寫在 ta_analyzer.py 裡面
+        # 它會比對 Excel 中的「去重日期」欄位
         alerts = ANALYZE_FUNC(gc, SPREADSHEET_NAME, stock_df['代號'].tolist(), stock_df)
         
         if alerts:
-            header = f"🔔 *技術指標警報 ({datetime.now(TAIPEI_TZ).strftime('%H:%M:%S')})*"
+            header = f"🔔 *技術指標警報 ({now_taipei.strftime('%H:%M:%S')})*"
             await bot.send_message(chat_id=target_id, text=header, parse_mode='Markdown')
             for msg in alerts:
                 try:
-                    # 如果 ta_analyzer 回傳的訊息還沒包含名稱，您可以在這裡進行字串處理（如下例示）
-                    # 假設 msg 開頭是股票代號，我們可以嘗試匹配名稱
                     await bot.send_message(chat_id=target_id, text=msg, parse_mode='Markdown', disable_web_page_preview=True)
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(0.8) # 稍微增加延遲避免被 Telegram 阻擋
                 except Exception as e:
                     logger.error(f"發送失敗: {e}")
-        return True
+            return True
+        else:
+            logger.info("✅ 目前無新觸發指標（或今日已發送過）")
     return False
 
 # --- 6. Telegram 任務接口 ---
@@ -135,63 +133,44 @@ async def run_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await update.message.reply_text("🚀 收到指令，開始即時分析...")
     success = await run_analysis_and_send(context.bot)
     if not success:
-        await update.message.reply_text("❌ 分析失敗，請檢查 Log 或設定。")
+        await update.message.reply_text("ℹ️ 分析完成，目前沒有符合條件的新警報。")
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     current_id = update.effective_chat.id
-    await update.message.reply_text(f"👋 綁定成功！\n您的 Chat ID: `{current_id}`\n排程包含：亞盤、13:40 收盤前、全球盤、美股收盤。")
+    await update.message.reply_text(f"👋 綁定成功！\nChat ID: `{current_id}`")
 
-# --- 7. 排程設定 ---
+# --- 7. 排程設定 (每 30 分鐘執行一次) ---
 def setup_scheduling(job_queue: JobQueue):
-    job_queue.run_custom(periodic_reminder_job, job_kwargs={'trigger': 'cron', 'minute': '0,30', 'hour': '8-13', 'day_of_week': 'mon-fri', 'timezone': TAIPEI_TZ}, name='Asia')
-    job_queue.run_custom(periodic_reminder_job, job_kwargs={'trigger': 'cron', 'minute': '40', 'hour': '13', 'day_of_week': 'mon-fri', 'timezone': TAIPEI_TZ}, name='Asia_Closing')
-    job_queue.run_custom(periodic_reminder_job, job_kwargs={'trigger': 'cron', 'minute': '0', 'hour': '17,23', 'day_of_week': 'mon-fri', 'timezone': TAIPEI_TZ}, name='Global')
-    job_queue.run_custom(periodic_reminder_job, job_kwargs={'trigger': 'cron', 'minute': '0', 'hour': '5', 'day_of_week': 'sat', 'timezone': TAIPEI_TZ}, name='US_Close')
+    # 修改：週一至週五 08:00 - 13:30 每 30 分鐘執行
+    job_queue.run_custom(periodic_reminder_job, job_kwargs={'trigger': 'cron', 'minute': '0,30', 'hour': '8-13', 'day_of_week': 'mon-fri', 'timezone': TAIPEI_TZ}, name='Market_Hours')
+    # 收盤提醒
+    job_queue.run_custom(periodic_reminder_job, job_kwargs={'trigger': 'cron', 'minute': '40', 'hour': '13', 'day_of_week': 'mon-fri', 'timezone': TAIPEI_TZ}, name='Closing')
 
-# --- 8. Web 服務與 Health Check ---
+# --- 8. Web 服務 ---
 app = Flask(__name__)
-
 @app.route('/')
 @app.route('/health')
 def health_check():
-    return jsonify({
-        "status": "ok", 
-        "chat_id": safe_get_chat_id(),
-        "bot_ready": bool(TELEGRAM_BOT_TOKEN),
-        "server_time": datetime.now(TAIPEI_TZ).strftime('%Y-%m-%d %H:%M:%S')
-    }), 200
+    return jsonify({"status": "ok", "server_time": datetime.now(TAIPEI_TZ).strftime('%Y-%m-%d %H:%M:%S')}), 200
 
 def run_flask():
     port = int(os.environ.get('PORT', 8080))
-    logger.info(f"🌐 網頁伺服器啟動於 Port: {port}")
     app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
 
 # --- 9. 主程式入口 ---
 def main():
     threading.Thread(target=run_flask, daemon=True).start()
-
     if not TELEGRAM_BOT_TOKEN:
         logger.error("❌ 找不到 TELEGRAM_BOT_TOKEN")
-        while True: time.sleep(100)
         return
 
-    while True:
-        try:
-            logger.info("⏳ 啟動 Telegram Bot (防衝突延遲 10 秒)...")
-            time.sleep(10)
-            application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-            setup_scheduling(application.job_queue)
-            application.add_handler(CommandHandler("start", start_command))
-            application.add_handler(CommandHandler("run", run_command))
-            logger.info("📢 Bot 已成功連線並運行中")
-            application.run_polling(allowed_updates=Update.ALL_TYPES, close_loop=False)
-        except Exception as e:
-            if "Conflict" in str(e):
-                logger.warning("⚠️ 偵測到實例衝突，正在重試...")
-                time.sleep(20)
-            else:
-                logger.error(f"💥 程式異常: {e}")
-                time.sleep(30)
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    setup_scheduling(application.job_queue)
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("run", run_command))
+    
+    logger.info("📢 Bot 運行中...")
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
     main()
