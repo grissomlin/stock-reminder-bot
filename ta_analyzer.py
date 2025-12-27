@@ -12,7 +12,7 @@ import ta_helpers
 logger = logging.getLogger(__name__)
 TAIPEI_TZ = timezone('Asia/Taipei')
 
-# === 1. 技術指標計算 ===
+# === 1. 技術指標計算 (穩定版) ===
 
 def stoch(high, low, close, k_period=9):
     h = np.array(high).flatten().astype(float)
@@ -66,7 +66,6 @@ def download_one_stock(ticker):
     clean_ticker = clean_ticker.strip()
     if clean_ticker.isdigit() and len(clean_ticker) <= 4: clean_ticker += ".TW"
     try:
-        # 強制關閉 Multi-Index 避免後續長度錯誤
         df = yf.download(clean_ticker, period="6mo", interval="1d", progress=False, auto_adjust=True)
         if not df.empty and len(df) >= 20:
             return clean_ticker, "ok", df
@@ -79,7 +78,6 @@ def analyze_and_update_sheets(gc, spreadsheet_name, stock_codes, stock_df):
     alerts = []
     taipei_now = datetime.now(TAIPEI_TZ)
     current_date_obj = taipei_now.date()
-    full_time_str = taipei_now.strftime('%Y-%m-%d %H:%M:%S')
 
     try:
         sh = gc.open(spreadsheet_name)
@@ -99,35 +97,30 @@ def analyze_and_update_sheets(gc, spreadsheet_name, stock_codes, stock_df):
                 ticker, status, data = f.result()
                 if status == "ok": successful_data[ticker] = data
 
-        update_cells = []
+        update_cells_raw = []
         for code, df in successful_data.items():
             row_idx = code_to_row.get(code)
             if not row_idx: continue
 
             try:
-                # --- 1D 轉換與長度校正 ---
+                # 數據清洗與長度對齊
                 c = df['Close'].values.flatten().astype(float)
                 h = df['High'].values.flatten().astype(float)
                 l = df['Low'].values.flatten().astype(float)
-                
-                # 確保 Index 與數據長度完全匹配 (解決 384 vs 128 問題)
                 clean_index = df.index[-len(c):]
                 series_low = pd.Series(l, index=clean_index)
                 series_high = pd.Series(h, index=clean_index)
             except Exception as e:
-                logger.error(f"❌ {code} 數據處理失敗: {e}")
+                logger.error(f"❌ {code} 數據轉換失敗: {e}")
                 continue
 
+            # 取得舊資料列讀取開關
             old_row = all_rows[row_idx - 1]
-            row_data = {}
-            for key, col in COLUMN_MAP.items():
-                col_idx = excel_col_to_index(col)
-                row_data[key] = old_row[col_idx] if col_idx < len(old_row) else ""
-            
+            row_data = {k: (old_row[excel_col_to_index(v)] if excel_col_to_index(v) < len(old_row) else "") for k, v in COLUMN_MAP.items()}
             row_data['KD_SWITCH'] = old_row[excel_col_to_index('K')] if len(old_row) > 10 else 'ON'
             row_data['MACD_SWITCH'] = old_row[excel_col_to_index('N')] if len(old_row) > 13 else 'ON'
 
-            # 指標計算
+            # 計算指標
             ma5, ma10, ma20 = sma(c, 5), sma(c, 10), sma(c, 20)
             slowk = sma(stoch(h, l, c), 3)
             slowd = sma(slowk, 3)
@@ -137,10 +130,8 @@ def analyze_and_update_sheets(gc, spreadsheet_name, stock_codes, stock_df):
             kd_sig, is_kd = ta_helpers.check_cross_signal(slowk[-1], slowd[-1], slowk[-2], slowd[-2], "KD")
             macd_sig, is_macd = ta_helpers.check_cross_signal(macd_l[-1], sig_l[-1], macd_l[-2], sig_l[-2], "MACD")
 
-            # 輔助
-            s5 = round(ta_helpers.calculate_slope(ma5), 4)
-            s10 = round(ta_helpers.calculate_slope(ma10), 4)
-            s20 = round(ta_helpers.calculate_slope(ma20), 4)
+            # 斜率與輔助數值
+            s5, s10, s20 = round(ta_helpers.calculate_slope(ma5), 4), round(ta_helpers.calculate_slope(ma10), 4), round(ta_helpers.calculate_slope(ma20), 4)
             tangle = ta_helpers.check_ma_tangle(ma5, ma10, ma20)
             slope_desc = ta_helpers.get_slope_description(s5, s10, s20)
             bias = f"{round(((c[-1] / ma20[-1]) - 1) * 100, 2)}%" if not np.isnan(ma20[-1]) else "N/A"
@@ -155,21 +146,26 @@ def analyze_and_update_sheets(gc, spreadsheet_name, stock_codes, stock_df):
             provider = old_row[excel_col_to_index('B')] if len(old_row) > 1 else ""
             link = ta_helpers.get_static_link(code, provider)
 
-            # 發送警報
-            ta_helpers.process_single_signal('KD', is_kd, kd_sig, code, row_data, COLUMN_MAP, current_date_obj, alerts, [], update_cells, row_idx, link)
-            ta_helpers.process_single_signal('MACD', is_macd, macd_sig, code, row_data, COLUMN_MAP, current_date_obj, alerts, [], update_cells, row_idx, link)
+            # 生成警報訊息 (存入 alerts) 並獲取 Sheets 更新 (存入 update_cells_raw)
+            ta_helpers.process_single_signal('KD', is_kd, kd_sig, code, row_data, COLUMN_MAP, current_date_obj, alerts, [], update_cells_raw, row_idx, link)
+            ta_helpers.process_single_signal('MACD', is_macd, macd_sig, code, row_data, COLUMN_MAP, current_date_obj, alerts, [], update_cells_raw, row_idx, link)
 
-            # 更新 Sheets 清單
-            update_cells.append({'range': f"{COLUMN_MAP['latest_close']}{row_idx}", 'values': [[round(float(c[-1]), 2)]]})
-            update_cells.append({'range': f"{COLUMN_MAP['MA5_SLOPE']}{row_idx}", 'values': [[s5]]})
-            update_cells.append({'range': f"{COLUMN_MAP['MA10_SLOPE']}{row_idx}", 'values': [[s10]]})
-            update_cells.append({'range': f"{COLUMN_MAP['MA20_SLOPE']}{row_idx}", 'values': [[s20]]})
-            update_cells.append({'range': f"{COLUMN_MAP['BIAS_Val']}{row_idx}", 'values': [[bias]]})
-            update_cells.append({'range': f"{COLUMN_MAP['MA_TANGLE']}{row_idx}", 'values': [[tangle]]})
-            update_cells.append({'range': f"{COLUMN_MAP['SLOPE_DESC']}{row_idx}", 'values': [[slope_desc]]})
+            # 輔助數據更新
+            for k, v in [('latest_close', round(float(c[-1]), 2)), ('MA5_SLOPE', s5), ('MA10_SLOPE', s10), ('MA20_SLOPE', s20), ('BIAS_Val', bias), ('MA_TANGLE', tangle), ('SLOPE_DESC', slope_desc)]:
+                update_cells_raw.append({'range': f"{COLUMN_MAP[k]}{row_idx}", 'values': [[v]]})
 
-        if update_cells:
-            ws.batch_update(update_cells, value_input_option='USER_ENTERED')
+        # --- 格式統一轉換器 ---
+        final_updates = []
+        for item in update_cells_raw:
+            if isinstance(item, dict):
+                final_updates.append(item)
+            elif isinstance(item, tuple):
+                (col_letter, row_num), val = item
+                final_updates.append({'range': f"{col_letter}{row_num}", 'values': [[val]]})
+
+        if final_updates:
+            ws.batch_update(final_updates, value_input_option='USER_ENTERED')
+            logger.info(f"✅ 成功更新 {len(final_updates)} 筆雲端資料")
 
     except Exception as e:
         logger.error(f"❌ 分析失敗: {e}", exc_info=True)
