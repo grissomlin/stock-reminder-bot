@@ -12,7 +12,7 @@ import ta_helpers
 logger = logging.getLogger(__name__)
 TAIPEI_TZ = timezone('Asia/Taipei')
 
-# === 1. 技術指標計算 (穩定版) ===
+# === 1. 技術指標計算 ===
 
 def stoch(high, low, close, k_period=9):
     h = np.array(high).flatten().astype(float)
@@ -103,15 +103,23 @@ def analyze_and_update_sheets(gc, spreadsheet_name, stock_codes, stock_df):
             if not row_idx: continue
 
             try:
-                # 數據清洗與長度對齊
-                c = df['Close'].values.flatten().astype(float)
-                h = df['High'].values.flatten().astype(float)
-                l = df['Low'].values.flatten().astype(float)
+                # --- 核心強化：處理多維度數據提取 ---
+                def get_clean_values(col_name):
+                    col_data = df[col_name]
+                    # 如果該欄位有多個 sub-column，取第一欄 (iloc[:, 0])
+                    if len(col_data.shape) > 1:
+                        return col_data.iloc[:, 0].values.flatten().astype(float)
+                    return col_data.values.flatten().astype(float)
+
+                c = get_clean_values('Close')
+                h = get_clean_values('High')
+                l = get_clean_values('Low')
+                
                 clean_index = df.index[-len(c):]
                 series_low = pd.Series(l, index=clean_index)
                 series_high = pd.Series(h, index=clean_index)
             except Exception as e:
-                logger.error(f"❌ {code} 數據轉換失敗: {e}")
+                logger.error(f"❌ {code} 數據深度清洗失敗: {e}")
                 continue
 
             # 取得舊資料列讀取開關
@@ -120,7 +128,7 @@ def analyze_and_update_sheets(gc, spreadsheet_name, stock_codes, stock_df):
             row_data['KD_SWITCH'] = old_row[excel_col_to_index('K')] if len(old_row) > 10 else 'ON'
             row_data['MACD_SWITCH'] = old_row[excel_col_to_index('N')] if len(old_row) > 13 else 'ON'
 
-            # 計算指標
+            # 指標計算
             ma5, ma10, ma20 = sma(c, 5), sma(c, 10), sma(c, 20)
             slowk = sma(stoch(h, l, c), 3)
             slowd = sma(slowk, 3)
@@ -146,7 +154,7 @@ def analyze_and_update_sheets(gc, spreadsheet_name, stock_codes, stock_df):
             provider = old_row[excel_col_to_index('B')] if len(old_row) > 1 else ""
             link = ta_helpers.get_static_link(code, provider)
 
-            # 生成警報訊息 (存入 alerts) 並獲取 Sheets 更新 (存入 update_cells_raw)
+            # 生成警報
             ta_helpers.process_single_signal('KD', is_kd, kd_sig, code, row_data, COLUMN_MAP, current_date_obj, alerts, [], update_cells_raw, row_idx, link)
             ta_helpers.process_single_signal('MACD', is_macd, macd_sig, code, row_data, COLUMN_MAP, current_date_obj, alerts, [], update_cells_raw, row_idx, link)
 
@@ -154,7 +162,7 @@ def analyze_and_update_sheets(gc, spreadsheet_name, stock_codes, stock_df):
             for k, v in [('latest_close', round(float(c[-1]), 2)), ('MA5_SLOPE', s5), ('MA10_SLOPE', s10), ('MA20_SLOPE', s20), ('BIAS_Val', bias), ('MA_TANGLE', tangle), ('SLOPE_DESC', slope_desc)]:
                 update_cells_raw.append({'range': f"{COLUMN_MAP[k]}{row_idx}", 'values': [[v]]})
 
-        # --- 格式統一轉換器 ---
+        # --- 格式統一轉換 ---
         final_updates = []
         for item in update_cells_raw:
             if isinstance(item, dict):
@@ -165,7 +173,7 @@ def analyze_and_update_sheets(gc, spreadsheet_name, stock_codes, stock_df):
 
         if final_updates:
             ws.batch_update(final_updates, value_input_option='USER_ENTERED')
-            logger.info(f"✅ 成功更新 {len(final_updates)} 筆雲端資料")
+            logger.info(f"✅ 分析任務圓滿完成，更新了 {len(final_updates)} 筆資料。")
 
     except Exception as e:
         logger.error(f"❌ 分析失敗: {e}", exc_info=True)
