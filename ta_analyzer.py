@@ -7,22 +7,31 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
 import numpy as np
 import yfinance as yf
-from numba import njit 
+# from numba import njit  # 暫時註解掉，避免型態衝突
 import ta_helpers 
 
 logger = logging.getLogger(__name__)
 TAIPEI_TZ = timezone('Asia/Taipei')
 
-# === 1. 技術指標計算 (保持 Numba 加速) ===
-@njit
+# === 1. 技術指標計算 ===
+
 def stoch(high, low, close, k_period=9):
-    n = len(close)
+    """
+    計算隨機指標 (Stochastic Oscillator)
+    """
+    # 確保輸入是 1D Numpy Array 且為 float 型態
+    h = np.array(high).flatten().astype(float)
+    l = np.array(low).flatten().astype(float)
+    c = np.array(close).flatten().astype(float)
+    
+    n = len(c)
     k = np.full(n, np.nan)
+    
     for i in range(k_period - 1, n):
-        ll = np.min(low[i - k_period + 1:i + 1])
-        hh = np.max(high[i - k_period + 1:i + 1])
+        ll = np.min(l[i - k_period + 1 : i + 1])
+        hh = np.max(h[i - k_period + 1 : i + 1])
         if hh - ll != 0:
-            k[i] = 100 * (close[i] - ll) / (hh - ll)
+            k[i] = 100 * (c[i] - ll) / (hh - ll)
     return k
 
 def sma(arr, period):
@@ -30,15 +39,16 @@ def sma(arr, period):
     return pd.Series(arr).rolling(period).mean().values
 
 def macd(close, fast=12, slow=26, signal=9):
-    close_s = pd.Series(close)
-    ema_fast = close_s.ewm(span=fast, adjust=False).mean()
-    ema_slow = close_s.ewm(span=slow, adjust=False).mean()
+    # 確保資料為 1D
+    c = pd.Series(np.array(close).flatten().astype(float))
+    ema_fast = c.ewm(span=fast, adjust=False).mean()
+    ema_slow = c.ewm(span=slow, adjust=False).mean()
     macd_line = ema_fast - ema_slow
     signal_line = macd_line.ewm(span=signal, adjust=False).mean()
     hist = macd_line - signal_line
     return macd_line.values, signal_line.values, hist.values
 
-# === 2. 欄位映射 (確保每個指標都有獨立的 ALERT_DATE) ===
+# === 2. 欄位映射 ===
 COLUMN_MAP = {
     'latest_close': 'D',
     'KD_Signal': 'J',     'KD_ALERT_DATE': 'L',
@@ -57,12 +67,15 @@ def excel_col_to_index(col_letter):
 
 # --- 3. 下載器 ---
 def download_one_stock(ticker):
+    # 處理可能的引號問題
     clean_ticker = ticker.split('"')[-2] if '"' in ticker else ticker
     clean_ticker = clean_ticker.strip()
-    if clean_ticker.isdigit() and len(clean_ticker) <= 4: clean_ticker += ".TW"
+    # 自動補齊台股代碼
+    if clean_ticker.isdigit() and len(clean_ticker) <= 4: 
+        clean_ticker += ".TW"
     
     try:
-        # 使用 yf.download 批次下載或單次下載，這裡示範單次下載
+        # 下載半年資料確保指標計算正確
         df = yf.download(clean_ticker, period="6mo", interval="1d", progress=False, auto_adjust=True)
         if not df.empty and len(df) >= 20:
             return clean_ticker, "ok", df
@@ -105,7 +118,6 @@ def analyze_and_update_sheets(gc, spreadsheet_name, stock_codes, stock_df):
             row_idx = code_to_row.get(code)
             if not row_idx: continue
 
-            # 取得該行舊資料 (用於檢查各別指標的去重時間)
             old_row = all_rows[row_idx - 1]
             def get_old_val(key):
                 idx = excel_col_to_index(COLUMN_MAP[key])
@@ -113,8 +125,13 @@ def analyze_and_update_sheets(gc, spreadsheet_name, stock_codes, stock_df):
 
             # 指標計算
             c, h, l = df['Close'].values, df['High'].values, df['Low'].values
-            slowk = sma(stoch(h, l, c), 3)
+            
+            # 計算 KD
+            k_raw = stoch(h, l, c)
+            slowk = sma(k_raw, 3)
             slowd = sma(slowk, 3)
+            
+            # 計算 MACD
             macd_l, sig_l, _ = macd(c)
 
             # 訊號判斷
@@ -124,10 +141,7 @@ def analyze_and_update_sheets(gc, spreadsheet_name, stock_codes, stock_df):
             display_name = f"{code} {name_map.get(code, '')}".strip()
             row_msgs = []
 
-            # --- 關鍵修正：針對每個指標「獨立」去重 ---
-            # 判斷邏輯：指標觸發了 且 (去重欄位不包含今天日期)
-            
-            # 1. KD 去重
+            # 1. KD 去重與更新
             if is_kd:
                 last_kd_date = get_old_val('KD_ALERT_DATE')
                 if today_str not in last_kd_date:
@@ -135,7 +149,7 @@ def analyze_and_update_sheets(gc, spreadsheet_name, stock_codes, stock_df):
                     update_cells.append({'range': f"{COLUMN_MAP['KD_ALERT_DATE']}{row_idx}", 'values': [[full_time_str]]})
                     update_cells.append({'range': f"{COLUMN_MAP['KD_Signal']}{row_idx}", 'values': [[kd_sig]]})
 
-            # 2. MACD 去重
+            # 2. MACD 去重與更新
             if is_macd:
                 last_macd_date = get_old_val('MACD_ALERT_DATE')
                 if today_str not in last_macd_date:
@@ -143,18 +157,20 @@ def analyze_and_update_sheets(gc, spreadsheet_name, stock_codes, stock_df):
                     update_cells.append({'range': f"{COLUMN_MAP['MACD_ALERT_DATE']}{row_idx}", 'values': [[full_time_str]]})
                     update_cells.append({'range': f"{COLUMN_MAP['MACD_Signal']}{row_idx}", 'values': [[macd_sig]]})
 
-            # 如果有任何「新」觸發的指標，才發送 Telegram 訊息
             if row_msgs:
                 msg_content = f"{display_name} " + " ".join(row_msgs)
                 alerts.append(msg_content)
-                # 更新總表資訊
                 update_cells.append({'range': f"{COLUMN_MAP['alert_time']}{row_idx}", 'values': [[full_time_str]]})
                 update_cells.append({'range': f"{COLUMN_MAP['Alert_Detail']}{row_idx}", 'values': [[msg_content]]})
 
-            # 無論有無警報，都更新現價
-            update_cells.append({'range': f"{COLUMN_MAP['latest_close']}{row_idx}", 'values': [[round(float(c[-1]), 2)]]})
+            # 更新現價
+            try:
+                current_price = float(c[-1])
+                update_cells.append({'range': f"{COLUMN_MAP['latest_close']}{row_idx}", 'values': [[round(current_price, 2)]]})
+            except:
+                pass
 
-        # 批次更新
+        # 批次更新到 Google Sheets
         if update_cells:
             ws.batch_update(update_cells, value_input_option='USER_ENTERED')
 
