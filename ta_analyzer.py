@@ -60,14 +60,14 @@ def excel_col_to_index(col_letter):
         index += (ord(letter) - ord('A') + 1) * (26 ** i)
     return index - 1
 
-# --- 3. 下載器 (優化併發下載) ---
+# --- 3. 下載器 ---
 def download_one_stock(ticker):
     clean_ticker = ticker.split('"')[-2] if '"' in ticker else ticker
     clean_ticker = clean_ticker.strip()
     if clean_ticker.isdigit() and len(clean_ticker) <= 4: clean_ticker += ".TW"
     try:
-        # 加上預設參數降低 database locked 風險
-        df = yf.download(clean_ticker, period="6mo", interval="1d", progress=False, auto_adjust=True, multi_level_index=False)
+        # 強制關閉 Multi-Index 避免後續長度錯誤
+        df = yf.download(clean_ticker, period="6mo", interval="1d", progress=False, auto_adjust=True)
         if not df.empty and len(df) >= 20:
             return clean_ticker, "ok", df
     except Exception as e:
@@ -93,7 +93,6 @@ def analyze_and_update_sheets(gc, spreadsheet_name, stock_codes, stock_df):
             code_to_row[code.strip()] = idx
 
         successful_data = {}
-        # 稍微減少 worker 數量避免 yfinance 緩存鎖定
         with ThreadPoolExecutor(max_workers=3) as executor:
             futures = {executor.submit(download_one_stock, c): c for c in stock_codes}
             for f in as_completed(futures):
@@ -106,12 +105,17 @@ def analyze_and_update_sheets(gc, spreadsheet_name, stock_codes, stock_df):
             if not row_idx: continue
 
             try:
-                # 強制轉換為一維 array 且為 float
+                # --- 1D 轉換與長度校正 ---
                 c = df['Close'].values.flatten().astype(float)
                 h = df['High'].values.flatten().astype(float)
                 l = df['Low'].values.flatten().astype(float)
+                
+                # 確保 Index 與數據長度完全匹配 (解決 384 vs 128 問題)
+                clean_index = df.index[-len(c):]
+                series_low = pd.Series(l, index=clean_index)
+                series_high = pd.Series(h, index=clean_index)
             except Exception as e:
-                logger.error(f"❌ {code} 數據轉換失敗: {e}")
+                logger.error(f"❌ {code} 數據處理失敗: {e}")
                 continue
 
             old_row = all_rows[row_idx - 1]
@@ -120,33 +124,26 @@ def analyze_and_update_sheets(gc, spreadsheet_name, stock_codes, stock_df):
                 col_idx = excel_col_to_index(col)
                 row_data[key] = old_row[col_idx] if col_idx < len(old_row) else ""
             
-            # 開關狀態預設
             row_data['KD_SWITCH'] = old_row[excel_col_to_index('K')] if len(old_row) > 10 else 'ON'
             row_data['MACD_SWITCH'] = old_row[excel_col_to_index('N')] if len(old_row) > 13 else 'ON'
 
-            # 計算指標與均線
+            # 指標計算
             ma5, ma10, ma20 = sma(c, 5), sma(c, 10), sma(c, 20)
             slowk = sma(stoch(h, l, c), 3)
             slowd = sma(slowk, 3)
             macd_l, sig_l, _ = macd(c)
 
-            # 訊號判斷
+            # 訊號
             kd_sig, is_kd = ta_helpers.check_cross_signal(slowk[-1], slowd[-1], slowk[-2], slowd[-2], "KD")
             macd_sig, is_macd = ta_helpers.check_cross_signal(macd_l[-1], sig_l[-1], macd_l[-2], sig_l[-2], "MACD")
 
-            # 輔助數值
+            # 輔助
             s5 = round(ta_helpers.calculate_slope(ma5), 4)
             s10 = round(ta_helpers.calculate_slope(ma10), 4)
             s20 = round(ta_helpers.calculate_slope(ma20), 4)
             tangle = ta_helpers.check_ma_tangle(ma5, ma10, ma20)
             slope_desc = ta_helpers.get_slope_description(s5, s10, s20)
-            
-            ma20_last = ma20[-1]
-            bias = f"{round(((c[-1] / ma20_last) - 1) * 100, 2)}%" if not np.isnan(ma20_last) else "N/A"
-
-            # 重要修正：確保傳入 find_extreme_time_diff 的是 1D Series 且數值為純量
-            series_low = pd.Series(l, index=df.index)
-            series_high = pd.Series(h, index=df.index)
+            bias = f"{round(((c[-1] / ma20[-1]) - 1) * 100, 2)}%" if not np.isnan(ma20[-1]) else "N/A"
 
             row_data.update({
                 'MA_TANGLE': tangle, 'SLOPE_DESC': slope_desc, 'BIAS_Val': bias,
@@ -158,11 +155,11 @@ def analyze_and_update_sheets(gc, spreadsheet_name, stock_codes, stock_df):
             provider = old_row[excel_col_to_index('B')] if len(old_row) > 1 else ""
             link = ta_helpers.get_static_link(code, provider)
 
-            # 生成警報
+            # 發送警報
             ta_helpers.process_single_signal('KD', is_kd, kd_sig, code, row_data, COLUMN_MAP, current_date_obj, alerts, [], update_cells, row_idx, link)
             ta_helpers.process_single_signal('MACD', is_macd, macd_sig, code, row_data, COLUMN_MAP, current_date_obj, alerts, [], update_cells, row_idx, link)
 
-            # Sheets 寫入更新
+            # 更新 Sheets 清單
             update_cells.append({'range': f"{COLUMN_MAP['latest_close']}{row_idx}", 'values': [[round(float(c[-1]), 2)]]})
             update_cells.append({'range': f"{COLUMN_MAP['MA5_SLOPE']}{row_idx}", 'values': [[s5]]})
             update_cells.append({'range': f"{COLUMN_MAP['MA10_SLOPE']}{row_idx}", 'values': [[s10]]})
