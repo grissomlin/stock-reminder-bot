@@ -12,9 +12,10 @@ import ta_helpers
 logger = logging.getLogger(__name__)
 TAIPEI_TZ = timezone('Asia/Taipei')
 
-# === 1. 技術指標計算 (移除 Numba 以確保穩定) ===
+# === 1. 技術指標計算 ===
 
 def stoch(high, low, close, k_period=9):
+    # 這裡也加上 flatten 確保輸入安全
     h = np.array(high).flatten().astype(float)
     l = np.array(low).flatten().astype(float)
     c = np.array(close).flatten().astype(float)
@@ -28,8 +29,10 @@ def stoch(high, low, close, k_period=9):
     return k
 
 def sma(arr, period):
-    if len(arr) < period: return np.full(len(arr), np.nan)
-    return pd.Series(arr).rolling(period).mean().values
+    # 強制轉為一維 Series 以計算均線
+    s = pd.Series(np.array(arr).flatten())
+    if len(s) < period: return np.full(len(s), np.nan)
+    return s.rolling(period).mean().values
 
 def macd(close, fast=12, slow=26, signal=9):
     c = pd.Series(np.array(close).flatten().astype(float))
@@ -102,23 +105,31 @@ def analyze_and_update_sheets(gc, spreadsheet_name, stock_codes, stock_df):
             row_idx = code_to_row.get(code)
             if not row_idx: continue
 
-            # 取得舊資料列以讀取開關狀態
+            # --- 重要修正：確保資料提取為一維 (1D) ---
+            try:
+                c = df['Close'].values.flatten().astype(float)
+                h = df['High'].values.flatten().astype(float)
+                l = df['Low'].values.flatten().astype(float)
+            except Exception as e:
+                logger.error(f"❌ {code} 數據扁平化失敗: {e}")
+                continue
+
+            # 取得舊資料列
             old_row = all_rows[row_idx - 1]
             row_data = {}
             for key, col in COLUMN_MAP.items():
                 col_idx = excel_col_to_index(col)
                 row_data[key] = old_row[col_idx] if col_idx < len(old_row) else ""
             
-            # 特別補充開關欄位 (假設開關在 K, N 等位置，請根據試算表實際位置調整)
+            # 讀取開關狀態 (通常在 K 欄和 N 欄)
             row_data['KD_SWITCH'] = old_row[excel_col_to_index('K')] if len(old_row) > 10 else 'ON'
             row_data['MACD_SWITCH'] = old_row[excel_col_to_index('N')] if len(old_row) > 13 else 'ON'
 
-            # 計算指標
-            c = df['Close'].values
+            # 計算均線
             ma5, ma10, ma20 = sma(c, 5), sma(c, 10), sma(c, 20)
             
             # 計算 KD & MACD
-            slowk = sma(stoch(df['High'].values, df['Low'].values, c), 3)
+            slowk = sma(stoch(h, l, c), 3)
             slowd = sma(slowk, 3)
             macd_l, sig_l, _ = macd(c)
 
@@ -126,7 +137,7 @@ def analyze_and_update_sheets(gc, spreadsheet_name, stock_codes, stock_df):
             kd_sig, is_kd = ta_helpers.check_cross_signal(slowk[-1], slowd[-1], slowk[-2], slowd[-2], "KD")
             macd_sig, is_macd = ta_helpers.check_cross_signal(macd_l[-1], sig_l[-1], macd_l[-2], sig_l[-2], "MACD")
 
-            # 計算輔助數值 (斜率、乖離率)
+            # 計算輔助數值
             s5 = round(ta_helpers.calculate_slope(ma5), 4)
             s10 = round(ta_helpers.calculate_slope(ma10), 4)
             s20 = round(ta_helpers.calculate_slope(ma20), 4)
@@ -134,32 +145,30 @@ def analyze_and_update_sheets(gc, spreadsheet_name, stock_codes, stock_df):
             slope_desc = ta_helpers.get_slope_description(s5, s10, s20)
             bias = f"{round(((c[-1] / ma20[-1]) - 1) * 100, 2)}%"
 
-            # 更新 row_data 供 helper 使用最新數值
+            # 更新臨時字典以供 ta_helpers 使用
             row_data.update({
                 'MA_TANGLE': tangle, 'SLOPE_DESC': slope_desc, 'BIAS_Val': bias,
-                'MA5_SLOPE': s5, 'MA10_SLOPE': s10, 'MA20_SLOPE': s20
+                'MA5_SLOPE': str(s5), 'MA10_SLOPE': str(s10), 'MA20_SLOPE': str(s20),
+                'LOW_DAYS': str(ta_helpers.find_extreme_time_diff(df['Low'], l[-1], 'LOW')),
+                'HIGH_DAYS': str(ta_helpers.find_extreme_time_diff(df['High'], h[-1], 'HIGH'))
             })
 
             # 獲取連結
             provider = old_row[excel_col_to_index('B')] if len(old_row) > 1 else ""
             link = ta_helpers.get_static_link(code, provider)
 
-            # 呼叫 Helper 處理警報 (這會生成詳細的 Telegram 訊息並加入 alerts)
-            summary_msgs = []
-            
-            # 處理 KD
+            # 呼叫 Helper 生成精美 Telegram 訊息
             ta_helpers.process_single_signal(
                 'KD', is_kd, kd_sig, code, row_data, COLUMN_MAP, 
-                current_date_obj, alerts, summary_msgs, update_cells, row_idx, link
+                current_date_obj, alerts, [], update_cells, row_idx, link
             )
             
-            # 處理 MACD
             ta_helpers.process_single_signal(
                 'MACD', is_macd, macd_sig, code, row_data, COLUMN_MAP, 
-                current_date_obj, alerts, summary_msgs, update_cells, row_idx, link
+                current_date_obj, alerts, [], update_cells, row_idx, link
             )
 
-            # 準備寫入試算表的更新數據
+            # 寫入更新清單
             update_cells.append({'range': f"{COLUMN_MAP['latest_close']}{row_idx}", 'values': [[round(float(c[-1]), 2)]]})
             update_cells.append({'range': f"{COLUMN_MAP['MA5_SLOPE']}{row_idx}", 'values': [[s5]]})
             update_cells.append({'range': f"{COLUMN_MAP['MA10_SLOPE']}{row_idx}", 'values': [[s10]]})
@@ -168,9 +177,9 @@ def analyze_and_update_sheets(gc, spreadsheet_name, stock_codes, stock_df):
             update_cells.append({'range': f"{COLUMN_MAP['MA_TANGLE']}{row_idx}", 'values': [[tangle]]})
             update_cells.append({'range': f"{COLUMN_MAP['SLOPE_DESC']}{row_idx}", 'values': [[slope_desc]]})
 
-        # 批次執行 Sheets 更新
+        # 批次更新試算表
         if update_cells:
-            # 轉換格式以符合 gspread batch_update
+            # 注意：gspread batch_update 格式
             ws.batch_update(update_cells, value_input_option='USER_ENTERED')
 
     except Exception as e:
