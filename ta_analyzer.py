@@ -78,12 +78,33 @@ def analyze_and_update_sheets(gc, spreadsheet_name, stock_codes, stock_df):
     alerts = []
     taipei_now = datetime.now(TAIPEI_TZ)
     current_date_obj = taipei_now.date()
+    
+    # 調試：顯示當前日期
+    logger.info(f"📅 當前台北日期: {current_date_obj.strftime('%Y-%m-%d')}")
 
     try:
         sh = gc.open(spreadsheet_name)
         ws = sh.worksheet("工作表1")
         all_rows = ws.get_all_values()
+        
+        # 獲取表頭（第一行）
+        headers = all_rows[0]
+        
+        # 建立中文欄位名稱到索引的映射
+        header_to_index = {}
+        for idx, header in enumerate(headers):
+            header_to_index[header.strip()] = idx
+            logger.debug(f"表頭索引 {idx}: {header.strip()}")
+        
+        # 調試：顯示重要的欄位索引
+        important_fields = ['KD_通知開關', 'MACD_通知開關', 'KD_去重日期', 'MACD_去重日期']
+        for field in important_fields:
+            if field in header_to_index:
+                logger.info(f"✅ 找到欄位: {field} -> 索引 {header_to_index[field]}")
+            else:
+                logger.warning(f"⚠️ 未找到欄位: {field}")
 
+        # 建立股票代碼到行索引的映射
         code_to_row = {}
         for idx, row in enumerate(all_rows[1:], start=2):
             if not row or not row[0]: continue
@@ -122,11 +143,38 @@ def analyze_and_update_sheets(gc, spreadsheet_name, stock_codes, stock_df):
                 logger.error(f"❌ {code} 數據深度清洗失敗: {e}")
                 continue
 
-            # 取得舊資料列讀取開關
+            # 讀取舊資料列（使用中文欄位名稱）
             old_row = all_rows[row_idx - 1]
-            row_data = {k: (old_row[excel_col_to_index(v)] if excel_col_to_index(v) < len(old_row) else "") for k, v in COLUMN_MAP.items()}
-            row_data['KD_SWITCH'] = old_row[excel_col_to_index('K')] if len(old_row) > 10 else 'ON'
-            row_data['MACD_SWITCH'] = old_row[excel_col_to_index('N')] if len(old_row) > 13 else 'ON'
+            
+            # 使用中文欄位名稱讀取數據
+            row_data = {
+                'KD_SWITCH': old_row[header_to_index.get('KD_通知開關', 10)] if len(old_row) > 10 else 'ON',
+                'MACD_SWITCH': old_row[header_to_index.get('MACD_通知開關', 13)] if len(old_row) > 13 else 'ON',
+                'MA5_MA10_SWITCH': old_row[header_to_index.get('MA5/10_通知開關', 16)] if len(old_row) > 16 else 'ON',
+                'MA5_MA20_SWITCH': old_row[header_to_index.get('MA5/20_通知開關', 19)] if len(old_row) > 19 else 'ON',
+                'MA10_MA20_SWITCH': old_row[header_to_index.get('MA10/20_通知開關', 22)] if len(old_row) > 22 else 'ON',
+                'BIAS_SWITCH': old_row[header_to_index.get('乖離率_通知開關', 25)] if len(old_row) > 25 else 'ON',
+                
+                'KD_ALERT_DATE': old_row[header_to_index.get('KD_去重日期', 11)] if len(old_row) > 11 else '',
+                'MACD_ALERT_DATE': old_row[header_to_index.get('MACD_去重日期', 14)] if len(old_row) > 14 else '',
+                'MA5_MA10_ALERT_DATE': old_row[header_to_index.get('MA5/10_去重日期', 17)] if len(old_row) > 17 else '',
+                'MA5_MA20_ALERT_DATE': old_row[header_to_index.get('MA5/20_去重日期', 20)] if len(old_row) > 20 else '',
+                'MA10_MA20_ALERT_DATE': old_row[header_to_index.get('MA10/20_去重日期', 23)] if len(old_row) > 23 else '',
+                'BIAS_ALERT_DATE': old_row[header_to_index.get('乖離率_去重日期', 26)] if len(old_row) > 26 else '',
+                
+                'LOW_DAYS': old_row[header_to_index.get('低點間隔天數', 5)] if len(old_row) > 5 else '999',
+                'HIGH_DAYS': old_row[header_to_index.get('月高點間隔天數', 6)] if len(old_row) > 6 else '999',
+                'MA_TANGLE': old_row[header_to_index.get('均線糾纏狀態', 7)] if len(old_row) > 7 else '不明',
+                'SLOPE_DESC': old_row[header_to_index.get('趨勢斜率描述', 8)] if len(old_row) > 8 else '不明',
+                'BIAS_Val': old_row[header_to_index.get('10日乖離率 (%)', 4)] if len(old_row) > 4 else '0.00%',
+                'MA5_SLOPE': old_row[header_to_index.get('MA5 斜率數值', 27)] if len(old_row) > 27 else 'N/A',
+                'MA10_SLOPE': old_row[header_to_index.get('MA10 斜率數值', 28)] if len(old_row) > 28 else 'N/A',
+                'MA20_SLOPE': old_row[header_to_index.get('MA20 斜率數值', 29)] if len(old_row) > 29 else 'N/A',
+            }
+            
+            # 添加調試日誌
+            logger.info(f"📊 {code} - KD開關: {row_data['KD_SWITCH']}, KD上次日期: '{row_data['KD_ALERT_DATE']}'")
+            logger.info(f"📊 {code} - MACD開關: {row_data['MACD_SWITCH']}, MACD上次日期: '{row_data['MACD_ALERT_DATE']}'")
 
             # 指標計算
             ma5, ma10, ma20 = sma(c, 5), sma(c, 10), sma(c, 20)
@@ -151,7 +199,7 @@ def analyze_and_update_sheets(gc, spreadsheet_name, stock_codes, stock_df):
                 'HIGH_DAYS': str(ta_helpers.find_extreme_time_diff(series_high, float(h[-1]), 'HIGH'))
             })
 
-            provider = old_row[excel_col_to_index('B')] if len(old_row) > 1 else ""
+            provider = old_row[header_to_index.get('提供者', 2)] if len(old_row) > 2 else ""
             link = ta_helpers.get_static_link(code, provider)
 
             # 生成警報
